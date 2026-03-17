@@ -40,10 +40,12 @@ Thumbs.db
 # Project-specific
 backend/results/
 backend/Dataset/
+Dataset/
 backend/yolov8n.pt
 backend/*.pt
 backend/models/
 backend/marked_slots/marked_slots.json
+output/
 
 # Node.js/frontend
 frontend/node_modules/
