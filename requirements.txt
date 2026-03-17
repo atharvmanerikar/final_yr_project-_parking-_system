@@ -1,0 +1,20 @@
+# Parking Spot Detection Requirements
+
+# Core dependencies
+opencv-python>=4.8.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+
+# Deep Learning
+ultralytics>=8.0.0  # YOLOv8
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Optional: For GPU acceleration
+# --extra-index-url https://download.pytorch.org/whl/cu118
+# torch>=2.0.0+cu118
+# torchvision>=0.15.0+cu118
+
+# Utilities
+Pillow>=10.0.0
+scipy>=1.10.0
