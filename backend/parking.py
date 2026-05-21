@@ -1,6 +1,8 @@
 import json
 import os
-from typing import Dict, List, Tuple
+import sqlite3
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -8,6 +10,205 @@ from ultralytics import YOLO
 
 
 Point = Tuple[int, int]
+
+
+class ParkingDB:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS parking_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plate_number TEXT NOT NULL,
+                    slot_id INTEGER NOT NULL,
+                    event_time TEXT NOT NULL,
+                    image_name TEXT
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def insert_event(self, plate_number: str, slot_id: int, image_name: str) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO parking_events (plate_number, slot_id, event_time, image_name) VALUES (?, ?, ?, ?)",
+                (plate_number, slot_id, datetime.now().isoformat(timespec="seconds"), image_name),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+class PlateReader:
+    def __init__(self):
+        self.reader = None
+        self.available = False
+        try:
+            import easyocr  # type: ignore
+
+            self.reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+            self.available = True
+        except Exception:
+            self.reader = None
+            self.available = False
+
+    def _extract_plate_roi(self, roi_bgr: np.ndarray) -> Optional[np.ndarray]:
+        if roi_bgr is None or roi_bgr.size == 0:
+            return None
+
+        try:
+            # Plates are often in the lower half of the car ROI
+            h0, w0 = roi_bgr.shape[:2]
+            crop = roi_bgr[int(h0 * 0.45):h0, 0:w0]
+
+            gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+            gray = cv2.bilateralFilter(gray, 9, 75, 75)
+            edges = cv2.Canny(gray, 50, 150)
+            edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+
+            cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not cnts:
+                return None
+
+            h_img, w_img = roi_bgr.shape[:2]
+            best = None
+            best_score = 0.0
+
+            for c in cnts:
+                x, y, w, h = cv2.boundingRect(c)
+                if w <= 0 or h <= 0:
+                    continue
+
+                area = w * h
+                if area < 0.01 * (w_img * h_img):
+                    continue
+
+                aspect = w / float(h)
+                if aspect < 2.0 or aspect > 6.5:
+                    continue
+
+                if w < 60 or h < 18:
+                    continue
+
+                score = area * (1.0 - abs(aspect - 3.5) / 3.5)
+                if score > best_score:
+                    best_score = score
+                    best = (x, y, w, h)
+
+            if best is None:
+                # Retry in the lower-half crop
+                roi_bgr = crop
+                if roi_bgr is None or roi_bgr.size == 0:
+                    return None
+
+                gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+                gray = cv2.bilateralFilter(gray, 9, 75, 75)
+                edges = cv2.Canny(gray, 50, 150)
+                edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+                cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if not cnts:
+                    return None
+
+                h_img, w_img = roi_bgr.shape[:2]
+                best = None
+                best_score = 0.0
+                for c in cnts:
+                    x, y, w, h = cv2.boundingRect(c)
+                    if w <= 0 or h <= 0:
+                        continue
+
+                    area = w * h
+                    if area < 0.01 * (w_img * h_img):
+                        continue
+
+                    aspect = w / float(h)
+                    if aspect < 2.0 or aspect > 6.5:
+                        continue
+
+                    if w < 60 or h < 18:
+                        continue
+
+                    score = area * (1.0 - abs(aspect - 3.5) / 3.5)
+                    if score > best_score:
+                        best_score = score
+                        best = (x, y, w, h)
+
+                if best is None:
+                    return None
+
+            x, y, w, h = best
+            pad_x = int(round(w * 0.08))
+            pad_y = int(round(h * 0.20))
+            x1 = max(0, x - pad_x)
+            y1 = max(0, y - pad_y)
+            x2 = min(w_img, x + w + pad_x)
+            y2 = min(h_img, y + h + pad_y)
+            plate = roi_bgr[y1:y2, x1:x2]
+            return plate if plate.size else None
+        except Exception:
+            return None
+
+    def read_plate(self, roi_bgr: np.ndarray) -> str:
+        if not self.available or self.reader is None or roi_bgr.size == 0:
+            return "UNKNOWN"
+
+        try:
+            plate_roi = self._extract_plate_roi(roi_bgr)
+            if plate_roi is None:
+                plate_roi = roi_bgr
+
+            gray = cv2.cvtColor(plate_roi, cv2.COLOR_BGR2GRAY)
+            gray = cv2.bilateralFilter(gray, 9, 75, 75)
+
+            # Multi-pass OCR with stronger preprocessing
+            candidates: List[np.ndarray] = []
+            candidates.append(gray)
+
+            # upscale for better OCR
+            h, w = gray.shape[:2]
+            scale = 2.0 if max(h, w) < 220 else 1.5
+            up = cv2.resize(gray, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
+            candidates.append(up)
+
+            # thresholded versions
+            thr1 = cv2.adaptiveThreshold(up, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5)
+            thr2 = cv2.adaptiveThreshold(up, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 5)
+            candidates.append(thr1)
+            candidates.append(thr2)
+
+            best_text = "UNKNOWN"
+            best_conf = 0.0
+
+            for img in candidates:
+                texts = self.reader.readtext(img, allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+                for t in texts:
+                    if len(t) < 3:
+                        continue
+                    txt = t[1] if len(t) > 1 else ""
+                    conf = float(t[2]) if len(t) > 2 else 0.0
+                    txt = "".join(ch for ch in txt.upper() if ch.isalnum())
+                    if len(txt) < 6:
+                        continue
+                    if conf > best_conf:
+                        best_conf = conf
+                        best_text = txt
+
+            return best_text
+        except Exception:
+            return "UNKNOWN"
 
 
 def shrink_bbox(b: Tuple[int, int, int, int], shrink: float = 0.15) -> Tuple[int, int, int, int]:
@@ -94,7 +295,15 @@ def detect_cars_only(model: YOLO, img_bgr: np.ndarray, conf: float = 0.3) -> Lis
     return cars
 
 
-def draw_results(img_bgr: np.ndarray, slots: List[dict], cars: List[dict], occ_threshold: float) -> Tuple[np.ndarray, List[dict]]:
+def draw_results(
+    img_bgr: np.ndarray,
+    slots: List[dict],
+    cars: List[dict],
+    occ_threshold: float,
+    plate_reader: Optional[PlateReader] = None,
+    db: Optional[ParkingDB] = None,
+    image_name: str = "",
+) -> Tuple[np.ndarray, List[dict]]:
     out = img_bgr.copy()
 
     used_cars = set()
@@ -118,6 +327,20 @@ def draw_results(img_bgr: np.ndarray, slots: List[dict], cars: List[dict], occ_t
         if occupied:
             used_cars.add(best_idx)
 
+        plate_number = None
+        bbox = None
+        if occupied and best_idx is not None:
+            bbox = cars[best_idx]["bbox"]
+            x1, y1, x2, y2 = bbox
+            roi = img_bgr[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+            if plate_reader is not None:
+                plate_number = plate_reader.read_plate(roi)
+            else:
+                plate_number = "UNKNOWN"
+
+            if db is not None:
+                db.insert_event(plate_number=plate_number or "UNKNOWN", slot_id=sid, image_name=image_name)
+
         poly = np.array(corners, dtype=np.int32)
         color = (0, 0, 255) if occupied else (0, 255, 0)
 
@@ -136,6 +359,8 @@ def draw_results(img_bgr: np.ndarray, slots: List[dict], cars: List[dict], occ_t
             "slot_id": sid,
             "occupied": bool(occupied),
             "overlap": float(best_score),
+            "plate_number": plate_number if occupied else None,
+            "bbox": bbox if occupied else None,
         })
 
     # Draw car boxes (optional)
@@ -151,6 +376,7 @@ def main() -> None:
     marked_path = os.path.join(base, "marked_slots", "marked_slots.json")
     dataset_dir = os.path.join(base, "Dataset")
     results_dir = os.path.join(base, "results")
+    db_path = os.path.join(base, "parking.db")
 
     os.makedirs(results_dir, exist_ok=True)
 
@@ -165,6 +391,8 @@ def main() -> None:
         raise FileNotFoundError(f"Missing: {model_path}")
 
     model = YOLO(model_path)
+    db = ParkingDB(db_path)
+    plate_reader = PlateReader()
 
     occ_threshold = 0.10  # 10%
 
@@ -181,7 +409,15 @@ def main() -> None:
             continue
 
         cars = detect_cars_only(model, img, conf=0.3)
-        vis, slot_results = draw_results(img, img_slots, cars, occ_threshold)
+        vis, slot_results = draw_results(
+            img,
+            img_slots,
+            cars,
+            occ_threshold,
+            plate_reader=plate_reader,
+            db=db,
+            image_name=img_name,
+        )
 
         occupied = sum(1 for s in slot_results if s["occupied"])
         free = len(slot_results) - occupied

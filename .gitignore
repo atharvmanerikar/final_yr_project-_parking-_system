@@ -44,10 +44,10 @@ Dataset/
 backend/yolov8n.pt
 backend/*.pt
 backend/models/
-backend/marked_slots/marked_slots.json
 output/
 
 # Node.js/frontend
+node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
@@ -60,3 +60,12 @@ frontend/.env.development.local
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Video files
+*.mp4
+*.avi
+*.mov
+
+# Backup files
+*_old.*
+*.bak
