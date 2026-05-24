@@ -49,7 +49,7 @@ function App() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-          path: 'c:\\\\Users\\\\athar\\\\Desktop\\\\final yr proj\\\\WhatsApp Video 2026-04-22 at 9.56.53 PM.mp4'
+          path: 'c:/Users/athar/Desktop/final yr proj/WhatsApp Video 2026-04-22 at 9.56.53 PM.mp4'
         })
       })
       
@@ -78,10 +78,15 @@ function App() {
 
   const stopVideo = async () => {
     try {
-      await fetch('/api/stop_camera', {method: 'POST'})
-      setIsLive(false)
-      setLiveFeedUrl('')
-      setFeedKey(0)
+      const res = await fetch('/api/stop_camera', {method: 'POST'})
+      if (res.ok) {
+        setIsLive(false)
+        setLiveFeedUrl('')
+        setFeedKey(0)
+        setError('')
+      } else {
+        setError('Failed to stop')
+      }
     } catch (e) {
       setError('Error stopping')
     }
@@ -91,7 +96,7 @@ function App() {
     <div className="app">
       <header className="header">
         <div className="header-left">
-          <h1>🚗 Smart Parking Dashboard</h1>
+          <h1>Smart Parking Dashboard</h1>
           <p>Real-time parking monitoring and analytics</p>
         </div>
         <div className="live-badge">
@@ -102,28 +107,24 @@ function App() {
 
       {error && (
         <div className="error-banner">
-          <span className="error-icon">⚠️</span>
           <span>{error}</span>
         </div>
       )}
 
       <section className="stats">
         <div className="card">
-          <div className="card-icon ic-blue">🅿️</div>
           <div className="card-info">
             <label>Total Slots</label>
             <div className="val val-blue">{totalSlots}</div>
           </div>
         </div>
         <div className="card">
-          <div className="card-icon ic-red">🚙</div>
           <div className="card-info">
             <label>Occupied</label>
             <div className="val val-red">{occupiedSlots}</div>
           </div>
         </div>
         <div className="card">
-          <div className="card-icon ic-green">✅</div>
           <div className="card-info">
             <label>Available</label>
             <div className="val val-green">{freeSlots}</div>
@@ -154,11 +155,11 @@ function App() {
           <div className="cam-actions">
             {!isLive ? (
               <button className="btn-stop" onClick={startVideo}>
-                ▶ Start
+                Start
               </button>
             ) : (
               <button className="btn-stop" onClick={stopVideo}>
-                ⏹ Stop
+                Stop
               </button>
             )}
             <a
@@ -167,7 +168,7 @@ function App() {
               rel="noreferrer"
               className="btn-open"
             >
-              🔗 Open Feed
+              Open Feed
             </a>
           </div>
         </div>
@@ -187,17 +188,14 @@ function App() {
           ) : (
             <div className="cam-slots">
               <div className="cam-slot occ">
-                <span style={{fontSize: '18px'}}>🚗</span>
                 <span>Occupied</span>
                 <span className="slot-num">Slot 1</span>
               </div>
               <div className="cam-slot occ">
-                <span style={{fontSize: '18px'}}>🚗</span>
                 <span>Occupied</span>
                 <span className="slot-num">Slot 2</span>
               </div>
               <div className="cam-slot occ">
-                <span style={{fontSize: '18px'}}>🚗</span>
                 <span>Occupied</span>
                 <span className="slot-num">Slot 3</span>
               </div>
