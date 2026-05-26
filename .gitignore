@@ -45,6 +45,8 @@ backend/yolov8n.pt
 backend/*.pt
 backend/models/
 output/
+backend/parking.db
+*.db
 
 # Node.js/frontend
 node_modules/
