@@ -373,6 +373,50 @@ body {
   color: #a0a0a0; 
   font-weight: 500;
 }
+.best-slot-text {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  color: white;
+}
+
+.parking-map-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 950px;
+  margin: auto;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+}
+
+.parking-map {
+  width: 100%;
+  display: block;
+  border-radius: 10px;
+}
+
+.path-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.full-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  color: white;
+  font-size: 32px;
+  font-weight: 700;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+}
 
 /* Responsive Design */
 @media (max-width: 768px) {

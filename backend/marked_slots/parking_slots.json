@@ -1,0 +1,52 @@
+{
+    "nodes": {
+    "entry": [291,248],
+    "turn1": [348,868],
+    "turn2": [856,1316],
+    "center1": [1421,1339],
+    "center2": [1804,1347],
+    "center3": [2103,1336],
+    "1": [1585,787],
+    "2": [1583,857],
+    "3": [1580,928]
+  },
+
+  "graph": {
+
+    "entry": [
+      "turn1"
+    ],
+
+    "turn1": [
+      "entry",
+      "turn2"
+    ],
+
+    "turn2": [
+      "turn1",
+      "center1"
+    ],
+
+    "center1": [
+      "turn2",
+      "center2",
+      "1",
+      "2",
+      "3"
+    ],
+
+    "center2": [
+      "center1",
+      "center3"
+    ],
+
+    "center3": [
+      "center2"
+    ],
+
+    "1": ["center1"],
+    "2": ["center1"],
+    "3": ["center1"]
+
+  }
+}

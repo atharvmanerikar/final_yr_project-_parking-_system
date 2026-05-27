@@ -4,6 +4,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import heapq
 
 import cv2
 import numpy as np
@@ -42,6 +43,13 @@ db: Optional[ParkingDB] = None
 marked_slots: List[dict] = []
 slots_by_image: Dict[str, List[dict]] = {}
 occ_threshold = 0.10
+GRAPH_PATH = os.path.join(BASE_DIR, "marked_slots", "parking_slots.json")
+
+parking_graph = {}
+
+if os.path.exists(GRAPH_PATH):
+    with open(GRAPH_PATH, "r") as f:
+        parking_graph = json.load(f)
 
 
 def load_summary() -> Dict[str, Any]:
@@ -88,6 +96,40 @@ def aggregate_status(summary: Dict[str, Any]) -> Dict[str, Any]:
         "last_updated": datetime.now().isoformat(timespec="seconds"),
     }
 
+def calculate_distance(p1, p2):
+    x1, y1 = p1
+    x2, y2 = p2
+    return ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+
+def dijkstra(graph, nodes, start, end):
+    queue = [(0, start, [])]
+    visited = set()
+    while queue:
+        cost, node, path = heapq.heappop(queue)
+        if node in visited:
+            continue
+        visited.add(node)
+        path = path + [node]
+        if node == end:
+            return path, cost
+        neighbors = graph.get(node, [])
+        for neighbor in neighbors:
+            if neighbor not in visited:
+                current_pos = nodes[node]
+                neighbor_pos = nodes[neighbor]
+                distance = calculate_distance(
+                    current_pos,
+                    neighbor_pos
+                )
+                heapq.heappush(
+                    queue,
+                    (
+                        cost + distance,
+                        neighbor,
+                        path
+                    )
+                )
+    return [], float("inf")
 
 def list_result_images() -> List[str]:
     if not os.path.isdir(RESULTS_DIR):
@@ -95,7 +137,6 @@ def list_result_images() -> List[str]:
     files = [f for f in os.listdir(RESULTS_DIR) if f.lower().endswith((".jpg", ".jpeg", ".png")) and f.startswith("result_")]
     files.sort(reverse=True)
     return files
-
 
 def initialize_live_resources():
     global model, plate_reader, db, marked_slots, slots_by_image
@@ -111,7 +152,6 @@ def initialize_live_resources():
     except Exception as e:
         print(f"[init] Error: {e}")
         return False
-
 
 def live_processing_loop():
     global latest_frame, latest_stats, camera_url
@@ -146,18 +186,28 @@ def live_processing_loop():
         )
         occupied = sum(1 for s in slot_results if s["occupied"])
         free = len(slot_results) - occupied
+        slot_status = {}
+        for s in slot_results:
+            slot_name = s.get("slot_id")
+            slot_status[slot_name] = (
+                "occupied" if s["occupied"] else "free"
+            )
         latest_stats = {
             "total_slots": len(slot_results),
             "occupied": occupied,
             "free": free,
-            "occupancy_rate": round((occupied / len(slot_results) * 100) if slot_results else 0, 1),
+            "occupancy_rate": round(
+                (occupied / len(slot_results) * 100)
+                if slot_results else 0,
+                1
+            ),
             "last_updated": datetime.now().isoformat(timespec="seconds"),
+            "slot_status": slot_status,
         }
         latest_frame = vis.copy()
         time.sleep(1)  # throttle to ~1 FPS
     cap.release()
     print("[live] Stopped")
-
 
 def video_file_processing_loop(video_path: str):
     global latest_frame, latest_stats
@@ -193,18 +243,28 @@ def video_file_processing_loop(video_path: str):
         )
         occupied = sum(1 for s in slot_results if s["occupied"])
         free = len(slot_results) - occupied
+        slot_status = {}
+        for s in slot_results:
+            slot_name = s.get("slot_id")
+            slot_status[slot_name] = (
+                "occupied" if s["occupied"] else "free"
+            )
         latest_stats = {
             "total_slots": len(slot_results),
             "occupied": occupied,
             "free": free,
-            "occupancy_rate": round((occupied / len(slot_results) * 100) if slot_results else 0, 1),
-            "last_updated": datetime.now().isoformat(timespec="seconds"),
+            "occupancy_rate": round(
+                (occupied / len(slot_results) * 100)
+                if slot_results else 0,
+                1
+            ),
+        "last_updated": datetime.now().isoformat(timespec="seconds"),
+        "slot_status": slot_status,
         }
         latest_frame = vis.copy()
         time.sleep(interval)
     cap.release()
     print("[video] Stopped")
-
 
 @app.route("/status", methods=["GET"])
 def status():
@@ -317,6 +377,54 @@ def parked_vehicles():
             latest_by_slot[slot] = ev
     return jsonify({"vehicles": list(latest_by_slot.values())})
 
+@app.route("/path", methods=["GET"])
+def get_path():
+    if not latest_stats:
+        return jsonify({
+            "slot": "FULL",
+            "coords": []
+        })
+    slot_status = latest_stats.get("slot_status", {})
+    free_slots = [
+        slot for slot, status in slot_status.items()
+        if status == "free"
+    ]
+    if not free_slots:
+        return jsonify({
+            "slot": "FULL",
+            "coords": []
+        })
+    nodes = parking_graph.get("nodes", {})
+    graph = parking_graph.get("graph", {})
+    entrance = "entry"
+    best_slot = None
+    best_path = None
+    best_distance = float("inf")
+    for slot in free_slots:
+        path, total_distance = dijkstra(
+            graph,
+            nodes,
+            entrance,
+            slot
+        )
+        if path:
+            if best_path is None or total_distance < best_distance:
+                best_path = path
+                best_slot = slot
+                best_distance = total_distance
+    if not best_path:
+        return jsonify({
+            "slot": "FULL",
+            "coords": []
+        })
+    coords = []
+    for node in best_path:
+        if node in nodes:
+            coords.append(nodes[node])
+    return jsonify({
+        "slot": best_slot,
+        "coords": coords
+    })
 
 if __name__ == "__main__":
     print("Starting parking API server on http://localhost:5000")
