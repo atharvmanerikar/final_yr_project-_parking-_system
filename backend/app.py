@@ -23,6 +23,7 @@ from parking import (
     draw_results,
     shrink_bbox,
 )
+from vehicle_tracker import VehicleTracker
 
 app = Flask(__name__)
 CORS(app)
@@ -40,6 +41,7 @@ camera_url: Optional[str] = None
 model: Optional[YOLO] = None
 plate_reader: Optional[PlateReader] = None
 db: Optional[ParkingDB] = None
+tracker: Optional[VehicleTracker] = None
 marked_slots: List[dict] = []
 slots_by_image: Dict[str, List[dict]] = {}
 occ_threshold = 0.10
@@ -139,12 +141,13 @@ def list_result_images() -> List[str]:
     return files
 
 def initialize_live_resources():
-    global model, plate_reader, db, marked_slots, slots_by_image
+    global model, plate_reader, db, tracker, marked_slots, slots_by_image
     try:
         model_path = os.path.join(BASE_DIR, "yolov8n.pt")
         model = YOLO(model_path)
         plate_reader = PlateReader()
         db = ParkingDB(DB_PATH)
+        tracker = VehicleTracker(track_thresh=0.3, track_buffer=30, db=db)
         marked_path = os.path.join(BASE_DIR, "marked_slots", "marked_slots.json")
         marked_slots = load_marked_slots(marked_path)
         slots_by_image = group_slots_by_image(marked_slots)
@@ -152,6 +155,63 @@ def initialize_live_resources():
     except Exception as e:
         print(f"[init] Error: {e}")
         return False
+
+def post_process_tracking(frame_vis: np.ndarray, cars_list: List[dict], slot_results_list: List[dict]) -> np.ndarray:
+    global tracker
+    if tracker is None:
+        return frame_vis
+        
+    # Update tracker with detections
+    active_tracks = tracker.update(cars_list)
+    current_time = datetime.now()
+    assigned_track_ids = set()
+    
+    # Map occupied slots to active tracks using bbox overlap
+    for res in slot_results_list:
+        if res.get("occupied") and res.get("bbox") is not None:
+            best_track = None
+            best_overlap = 0.0
+            slot_bbox = res["bbox"]
+            
+            for track in active_tracks:
+                overlap = tracker._calculate_iou(track.bbox, slot_bbox)
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_track = track
+            
+            if best_track is not None and best_overlap > 0.1:
+                tracker.assign_parking_slot(best_track.track_id, res["slot_id"], current_time)
+                assigned_track_ids.add(best_track.track_id)
+                if res.get("plate_number") and res["plate_number"] != "UNKNOWN":
+                    tracker.update_plate_number(best_track.track_id, res["plate_number"])
+                    
+    # Unassign tracks that left their slots
+    for track in active_tracks:
+        if track.parking_slot is not None and track.track_id not in assigned_track_ids:
+            tracker.remove_parking_slot(track.track_id, current_time)
+            
+    # Overlay annotations on vis
+    out = frame_vis.copy()
+    for track in active_tracks:
+        x1, y1, x2, y2 = track.bbox
+        if track.status == 'parked':
+            color = (0, 255, 0)
+        elif track.status == 'stopped':
+            color = (0, 0, 255)
+        else:
+            color = (0, 255, 255)
+            
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        label = f"ID:{track.track_id} {track.status.upper()}"
+        if track.plate_number and track.plate_number != "UNKNOWN":
+            label += f" ({track.plate_number})"
+            
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        text_color = (0, 0, 0) if color != (0, 0, 255) else (255, 255, 255)
+        cv2.rectangle(out, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+        cv2.putText(out, label, (x1 + 2, y1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, text_color, 1, cv2.LINE_AA)
+        
+    return out
 
 def live_processing_loop():
     global latest_frame, latest_stats, camera_url
@@ -184,6 +244,7 @@ def live_processing_loop():
             db=db,
             image_name=img_name,
         )
+        vis = post_process_tracking(vis, cars, slot_results)
         occupied = sum(1 for s in slot_results if s["occupied"])
         free = len(slot_results) - occupied
         slot_status = {}
@@ -241,6 +302,7 @@ def video_file_processing_loop(video_path: str):
             db=db,
             image_name=img_name,
         )
+        vis = post_process_tracking(vis, cars, slot_results)
         occupied = sum(1 for s in slot_results if s["occupied"])
         free = len(slot_results) - occupied
         slot_status = {}
@@ -278,6 +340,25 @@ def status():
 def results():
     files = list_result_images()
     return jsonify({"results": files})
+
+
+@app.route("/tracking", methods=["GET"])
+def get_tracking():
+    import sqlite3
+    tracks = []
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT track_id, plate_number, slot_id, entry_time, exit_time, status FROM vehicle_tracks ORDER BY track_id DESC"
+        )
+        tracks = [dict(row) for row in cur]
+    except Exception as e:
+        print(f"[get_tracking] Error: {e}")
+    finally:
+        if "conn" in locals():
+            conn.close()
+    return jsonify({"tracks": tracks})
 
 
 @app.route("/result/<filename>", methods=["GET"])

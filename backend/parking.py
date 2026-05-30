@@ -36,6 +36,19 @@ class ParkingDB:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS vehicle_tracks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    track_id INTEGER NOT NULL UNIQUE,
+                    plate_number TEXT,
+                    slot_id INTEGER,
+                    entry_time TEXT,
+                    exit_time TEXT,
+                    status TEXT
+                )
+                """
+            )
             conn.commit()
         finally:
             conn.close()
@@ -47,6 +60,41 @@ class ParkingDB:
                 "INSERT INTO parking_events (plate_number, slot_id, event_time, image_name) VALUES (?, ?, ?, ?)",
                 (plate_number, slot_id, datetime.now().isoformat(timespec="seconds"), image_name),
             )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def upsert_vehicle_track(
+        self,
+        track_id: int,
+        plate_number: Optional[str] = None,
+        slot_id: Optional[int] = None,
+        entry_time: Optional[str] = None,
+        exit_time: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT plate_number, slot_id, entry_time, exit_time, status FROM vehicle_tracks WHERE track_id = ?",
+                (track_id,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO vehicle_tracks (track_id, plate_number, slot_id, entry_time, exit_time, status) VALUES (?, ?, ?, ?, ?, ?)",
+                    (track_id, plate_number, slot_id, entry_time, exit_time, status),
+                )
+            else:
+                new_plate = plate_number if (plate_number and plate_number != "UNKNOWN") else row["plate_number"]
+                new_slot = slot_id if slot_id is not None else row["slot_id"]
+                new_entry = entry_time if entry_time else row["entry_time"]
+                new_exit = exit_time if exit_time else row["exit_time"]
+                new_status = status if status else row["status"]
+
+                conn.execute(
+                    "UPDATE vehicle_tracks SET plate_number = ?, slot_id = ?, entry_time = ?, exit_time = ?, status = ? WHERE track_id = ?",
+                    (new_plate, new_slot, new_entry, new_exit, new_status, track_id),
+                )
             conn.commit()
         finally:
             conn.close()

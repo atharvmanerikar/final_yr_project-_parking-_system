@@ -14,6 +14,10 @@ function App() {
   const [slotStatus, setSlotStatus] = useState({})
   const [pathCoords, setPathCoords] = useState([])
   const [bestSlot, setBestSlot] = useState("")
+  const [activeTab, setActiveTab] = useState('live')
+  const [trackingLogs, setTrackingLogs] = useState([])
+  const [filterDate, setFilterDate] = useState('')
+  const [filterTime, setFilterTime] = useState('')
   const parkingSlots = parkingData.slots
 
   const fetchPath = async () => {
@@ -28,6 +32,99 @@ function App() {
       console.error("Path Error:", error)
     }
   }
+
+  const fetchTrackingLogs = async () => {
+    try {
+      const response = await fetch('/api/tracking')
+      if (response.ok) {
+        const data = await response.json()
+        setTrackingLogs(data.tracks || [])
+      }
+    } catch (error) {
+      console.error("Error fetching tracking logs:", error)
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === 'history') {
+      fetchTrackingLogs()
+    }
+  }, [activeTab])
+
+  const formatTime = (isoStr) => {
+    if (!isoStr) return '-'
+    try {
+      const d = new Date(isoStr)
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    } catch (e) {
+      return isoStr
+    }
+  }
+
+  const formatDate = (dateStr) => {
+    if (!dateStr || dateStr === 'Unknown Date') return 'Unknown Date'
+    try {
+      const d = new Date(dateStr)
+      return d.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+    } catch (e) {
+      return dateStr
+    }
+  }
+
+  const matchesFilter = (log) => {
+    let dateMatches = true
+    let timeMatches = true
+
+    const entryDate = log.entry_time ? log.entry_time.split('T')[0] : null
+    const exitDate = log.exit_time ? log.exit_time.split('T')[0] : null
+    
+    if (filterDate) {
+      dateMatches = entryDate === filterDate || exitDate === filterDate
+    }
+
+    if (filterTime) {
+      const getMinutes = (tStr) => {
+        if (!tStr) return null
+        const parts = tStr.split('T')
+        if (parts.length < 2) return null
+        const tParts = parts[1].split(':')
+        return parseInt(tParts[0], 10) * 60 + parseInt(tParts[1], 10)
+      }
+
+      const filterMin = parseInt(filterTime.split(':')[0], 10) * 60 + parseInt(filterTime.split(':')[1], 10)
+      const entryMin = getMinutes(log.entry_time)
+      const exitMin = getMinutes(log.exit_time)
+
+      if (entryMin !== null) {
+        if (exitMin !== null) {
+          timeMatches = filterMin >= entryMin && filterMin <= exitMin
+        } else {
+          timeMatches = filterMin >= entryMin
+        }
+      } else {
+        timeMatches = false
+      }
+    }
+
+    return dateMatches && timeMatches
+  }
+
+  const filteredLogs = trackingLogs.filter(matchesFilter)
+
+  const groupedLogs = {}
+  filteredLogs.forEach(log => {
+    const dateStr = log.entry_time ? log.entry_time.split('T')[0] : (log.exit_time ? log.exit_time.split('T')[0] : 'Unknown Date')
+    if (!groupedLogs[dateStr]) {
+      groupedLogs[dateStr] = []
+    }
+    groupedLogs[dateStr].push(log)
+  })
+
+  const sortedDates = Object.keys(groupedLogs).sort((a, b) => {
+    if (a === 'Unknown Date') return 1
+    if (b === 'Unknown Date') return -1
+    return new Date(b) - new Date(a)
+  })
 
   const drawPath = (coords) => {
     const canvas = document.getElementById("pathCanvas")
@@ -221,145 +318,232 @@ function App() {
         </div>
       )}
 
-      <section className="stats">
-        <div className="card">
-          <div className="card-info">
-            <label>Total Slots</label>
-            <div className="val val-blue">{totalSlots}</div>
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-info">
-            <label>Occupied</label>
-            <div className="val val-red">{occupiedSlots}</div>
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-info">
-            <label>Available</label>
-            <div className="val val-green">{freeSlots}</div>
-          </div>
-        </div>
-      </section>
+      <div className="tab-navigation">
+        <button 
+          className={`tab-btn ${activeTab === 'live' ? 'active' : ''}`} 
+          onClick={() => setActiveTab('live')}
+        >
+          Live Monitoring
+        </button>
+        <button 
+          className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`} 
+          onClick={() => setActiveTab('history')}
+        >
+          Vehicle History Logs
+        </button>
+      </div>
 
-      <section className="panel">
-        <div className="panel-header">
-          <span className="panel-title">Capacity Overview</span>
-          <span className="pct-label">{capacityUsage}%</span>
-        </div>
-        <div className="sub-text">{occupiedSlots} of {totalSlots} slots occupied</div>
-        <div className="progress-bar-bg">
-          <div
-            className="progress-bar-fill"
-            style={{
-              width: `${capacityUsage}%`,
-              background: capacityUsage > 80 ? '#e53935' : capacityUsage > 50 ? '#fb8c00' : '#43a047'
-            }}
-          ></div>
-        </div>
-      </section>
+      {activeTab === 'live' ? (
+        <>
+          <section className="stats">
+            <div className="card">
+              <div className="card-info">
+                <label>Total Slots</label>
+                <div className="val val-blue">{totalSlots}</div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-info">
+                <label>Occupied</label>
+                <div className="val val-red">{occupiedSlots}</div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-info">
+                <label>Available</label>
+                <div className="val val-green">{freeSlots}</div>
+              </div>
+            </div>
+          </section>
 
-      <section className="panel">
-        <div className="cam-header">
-          <span className="panel-title">Live Camera Feed</span>
-          <div className="cam-actions">
-            {!isLive ? (
-              <button className="btn-stop" onClick={startVideo}>
-                Start
-              </button>
-            ) : (
-              <button className="btn-stop" onClick={stopVideo}>
-                Stop
+          <section className="panel">
+            <div className="panel-header">
+              <span className="panel-title">Capacity Overview</span>
+              <span className="pct-label">{capacityUsage}%</span>
+            </div>
+            <div className="sub-text">{occupiedSlots} of {totalSlots} slots occupied</div>
+            <div className="progress-bar-bg">
+              <div
+                className="progress-bar-fill"
+                style={{
+                  width: `${capacityUsage}%`,
+                  background: capacityUsage > 80 ? '#e53935' : capacityUsage > 50 ? '#fb8c00' : '#43a047'
+                }}
+              ></div>
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="cam-header">
+              <span className="panel-title">Live Camera Feed</span>
+              <div className="cam-actions">
+                {!isLive ? (
+                  <button className="btn-stop" onClick={startVideo}>
+                    Start
+                  </button>
+                ) : (
+                  <button className="btn-stop" onClick={stopVideo}>
+                    Stop
+                  </button>
+                )}
+                <a
+                  href="/api/live_feed"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn-open"
+                >
+                  Open Feed
+                </a>
+              </div>
+            </div>
+            <div className="cam-feed">
+              {isLive && liveFeedUrl ? (
+                <img
+                  key={feedKey}
+                  src={`${liveFeedUrl}?t=${Date.now()}`}
+                  alt="Live feed"
+                  className="video-stream"
+                  onLoad={() => console.log('[Video] Live feed loaded')}
+                  onError={(e) => {
+                    console.log('[Video] Live feed failed, trying fallback')
+                    e.target.src = '/api/latest_result?t=' + Date.now()
+                  }}
+                />
+              ) : (
+                <div className="cam-slots">
+                  <div className="cam-slot occ">
+                    <span>Occupied</span>
+                    <span className="slot-num">Slot 1</span>
+                  </div>
+                  <div className="cam-slot occ">
+                    <span>Occupied</span>
+                    <span className="slot-num">Slot 2</span>
+                  </div>
+                  <div className="cam-slot occ">
+                    <span>Occupied</span>
+                    <span className="slot-num">Slot 3</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <span className="panel-title">
+                Smart Navigation
+              </span>
+            </div>
+            <p className="best-slot-text">
+              Best Slot:
+              {bestSlot === "FULL"
+                ? " Parking Full 🚫"
+                : ` ${bestSlot}`}
+            </p>
+            <div className="parking-map-wrapper">
+              <img
+                src="./aitd_parking_lot_main.png"
+                className="parking-map"
+                crossOrigin="anonymous"
+              />
+              <canvas
+                id="pathCanvas"
+                width="900"
+                height="440"
+                className="path-canvas"
+              ></canvas>
+              {bestSlot === "FULL" && (
+                <div className="full-overlay">
+                  Parking Full 🚫
+                </div>
+              )}
+            </div>
+          </section>
+        </>
+      ) : (
+        <div className="history-container">
+          <div className="filters-bar">
+            <div className="filter-group">
+              <label>Filter by Date</label>
+              <input 
+                type="date" 
+                className="filter-input" 
+                value={filterDate} 
+                onChange={(e) => setFilterDate(e.target.value)}
+              />
+            </div>
+            <div className="filter-group">
+              <label>Filter by Time</label>
+              <input 
+                type="time" 
+                className="filter-input" 
+                value={filterTime} 
+                onChange={(e) => setFilterTime(e.target.value)}
+              />
+            </div>
+            {(filterDate || filterTime) && (
+              <button 
+                className="btn-reset" 
+                onClick={() => { setFilterDate(''); setFilterTime(''); }}
+              >
+                Reset Filters
               </button>
             )}
-            <a
-              href="/api/live_feed"
-              target="_blank"
-              rel="noreferrer"
-              className="btn-open"
-            >
-              Open Feed
-            </a>
           </div>
-        </div>
-        <div className="cam-feed">
-          {isLive && liveFeedUrl ? (
-            <img
-              key={feedKey}
-              src={`${liveFeedUrl}?t=${Date.now()}`}
-              alt="Live feed"
-              className="video-stream"
-              onLoad={() => console.log('[Video] Live feed loaded')}
-              onError={(e) => {
-                console.log('[Video] Live feed failed, trying fallback')
-                e.target.src = '/api/latest_result?t=' + Date.now()
-              }}
-            />
+
+          {sortedDates.length === 0 ? (
+            <div className="no-data">
+              No vehicle tracking history found matching the selected filters.
+            </div>
           ) : (
-            <div className="cam-slots">
-              <div className="cam-slot occ">
-                <span>Occupied</span>
-                <span className="slot-num">Slot 1</span>
+            sortedDates.map(dateStr => (
+              <div key={dateStr} className="date-group">
+                <div className="date-header">
+                  <span>{formatDate(dateStr)}</span>
+                  <span className="date-count">{groupedLogs[dateStr].length} record(s)</span>
+                </div>
+                <div className="table-wrapper">
+                  <table className="history-table">
+                    <thead>
+                      <tr>
+                        <th>Track ID</th>
+                        <th>Plate Number</th>
+                        <th>Slot ID</th>
+                        <th>Entry Time</th>
+                        <th>Exit Time</th>
+                        <th>Current Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {groupedLogs[dateStr].map((log, idx) => (
+                        <tr key={idx}>
+                          <td><strong>#{log.track_id}</strong></td>
+                          <td>
+                            <span style={{ fontFamily: 'monospace', letterSpacing: '0.5px', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px' }}>
+                              {log.plate_number || 'UNKNOWN'}
+                            </span>
+                          </td>
+                          <td>{log.slot_id !== null ? `Slot ${log.slot_id}` : '-'}</td>
+                          <td>{formatTime(log.entry_time)}</td>
+                          <td>{formatTime(log.exit_time)}</td>
+                          <td>
+                            <span className={`badge-status status-${log.status}`}>
+                              {log.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-              <div className="cam-slot occ">
-                <span>Occupied</span>
-                <span className="slot-num">Slot 2</span>
-              </div>
-              <div className="cam-slot occ">
-                <span>Occupied</span>
-                <span className="slot-num">Slot 3</span>
-              </div>
-            </div>
+            ))
           )}
         </div>
-      </section>
-
-      <section className="panel">
-
-        <div className="panel-header">
-          <span className="panel-title">
-            Smart Navigation
-          </span>
-        </div>
-
-        <p className="best-slot-text">
-
-          Best Slot:
-
-          {bestSlot === "FULL"
-            ? " Parking Full 🚫"
-            : ` ${bestSlot}`}
-
-        </p>
-
-        <div className="parking-map-wrapper">
-
-          <img
-            src="./aitd_parking_lot_main.png"
-            className="parking-map"
-            crossOrigin="anonymous"
-          />
-
-          <canvas
-            id="pathCanvas"
-            width="900"
-            height="440"
-            className="path-canvas"
-          ></canvas>
-
-          {bestSlot === "FULL" && (
-
-            <div className="full-overlay">
-              Parking Full 🚫
-            </div>
-
-          )}
-
-        </div>
-      </section>
-
+      )}
     </div>
   )
 }
 
 export default App
+
