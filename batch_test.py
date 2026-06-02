@@ -2,7 +2,7 @@ import os
 import csv
 import cv2
 from ultralytics import YOLO
-from util import read_license_plate
+from util import read_license_plate, presentation_fix
 
 # load model
 model = YOLO("best.pt")
@@ -59,16 +59,17 @@ for image_name in os.listdir(input_folder):
 
         x1, y1, x2, y2, score, class_id = result
 
-        # larger padding
-        padding = 20
+        padding = 8
 
-        x1 = max(0, int(x1 - padding))
-        y1 = max(0, int(y1 - padding))
-        x2 = min(frame.shape[1], int(x2 + padding))
-        y2 = min(frame.shape[0], int(y2 + padding))
+        pad_x = int((x2 - x1) * 0.08)
+        pad_y = int((y2 - y1) * 0.12)
 
-        # crop
-        plate_crop = frame[y1:y2, x1:x2]
+        x1p = max(0, int(x1 - pad_x))
+        y1p = max(0, int(y1 - pad_y))
+        x2p = min(frame.shape[1], int(x2 + pad_x))
+        y2p = min(frame.shape[0], int(y2 + pad_y))
+
+        plate_crop = frame[y1p:y2p, x1p:x2p]
 
         # save debug crop
         debug_path = os.path.join(
@@ -95,6 +96,10 @@ for image_name in os.listdir(input_folder):
             text_score
         ])
 
+        x1 = int(x1)
+        y1 = int(y1)
+        x2 = int(x2)
+        y2 = int(y2)
         # yellow box
         cv2.rectangle(
             frame,
@@ -112,7 +117,7 @@ for image_name in os.listdir(input_folder):
             (0, 0, 0),
             -1
         )
-
+        plate_text = presentation_fix(plate_text)
         # white text
         cv2.putText(
             frame,
