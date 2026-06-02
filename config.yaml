@@ -1,7 +1,0 @@
-path: C:\Users\jerem.LENOVOSLIMSHADY\yolov8-model  #dataset root dir
-train: images/train #train images (relative o 'path')
-val: images/train  #val images (relative to 'path')
-
-#classes
-names:
- 0: license_plate
