@@ -64,3 +64,6 @@ class Settings(BaseSettings):
                 abs_db_path = (PROJECT_ROOT / db_path_part).resolve()
                 abs_db_path_str = str(abs_db_path).replace("\\", "/")
                 object.__setattr__(self, "DATABASE_URL", f"sqlite+aiosqlite:///{abs_db_path_str}")
+
+settings = Settings()
+
