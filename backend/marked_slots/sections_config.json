@@ -1,0 +1,52 @@
+{
+  "sections": [
+    {
+      "id": "ground_floor",
+      "name": "Student Parking",
+      "source": "videos/aitd_parking_lot.mp4",
+      "slots_file": "backend/marked_slots/slots_ground_floor.json",
+      "slots": [
+        {
+          "id": "1",
+          "distance": 5
+        },
+        {
+          "id": "2",
+          "distance": 10
+        },
+        {
+          "id": "3",
+          "distance": 15
+        },
+        {
+          "id": "4",
+          "distance": 20
+        }
+      ]
+    },
+    {
+      "id": "first_floor",
+      "name": "Staff Parking",
+      "source": "0",
+      "slots_file": "backend/marked_slots/slots_first_floor.json",
+      "slots": [
+        {
+          "id": "5",
+          "distance": 12
+        },
+        {
+          "id": "6",
+          "distance": 18
+        },
+        {
+          "id": "7",
+          "distance": 24
+        },
+        {
+          "id": "8",
+          "distance": 30
+        }
+      ]
+    }
+  ]
+}
