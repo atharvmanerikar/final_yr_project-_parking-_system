@@ -25,3 +25,4 @@ Thumbs.db
 backend/marked_slots/temp_calibration_frame.jpg
 frontend/dist-ssr/
 frontend/.cache/
+videos/*.mp4
