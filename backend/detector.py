@@ -144,6 +144,8 @@ class ParkingDetector:
         self._outside_parked_frames: dict[int, int] = defaultdict(int)
         self._active_violations: dict[int, dict] = {}
         self._track_slot_overlaps: dict[int, float] = {}
+        self._track_missing_count: dict[int, int] = defaultdict(int)
+        self.last_valid_H = None
 
         # Annotators
         self._box_ann = sv.BoxAnnotator(thickness=2)
@@ -152,6 +154,20 @@ class ParkingDetector:
             text_thickness=1,
             text_position=sv.Position.TOP_LEFT
         )
+
+        # Load reference calibration image for camera alignment/stabilization
+        self.ref_img_path = str(settings.PROJECT_ROOT / "backend/marked_slots/temp_calibration_frame.jpg")
+        self.ref_img = cv2.imread(self.ref_img_path)
+        if self.ref_img is not None:
+            h_ref, w_ref = self.ref_img.shape[:2]
+            scale_ref = self.process_width / w_ref
+            self.ref_img_proc = cv2.resize(self.ref_img, (self.process_width, int(h_ref * scale_ref)))
+            self.orb = cv2.ORB_create(nfeatures=1000)
+            self.ref_kp, self.ref_des = self.orb.detectAndCompute(self.ref_img_proc, None)
+            print(f"[Detector] Loaded reference image for alignment: {self.ref_img_path} ({len(self.ref_kp)} keypoints)")
+        else:
+            self.ref_des = None
+            print("[Detector Warning] Reference image for alignment not found.")
 
         # Initialize SQLite database
         init_sync_db()
@@ -200,6 +216,54 @@ class ParkingDetector:
             scale = self.process_width / w
             proc = cv2.resize(frame, (self.process_width, int(h * scale)))
 
+            # Align current frame to reference frame using homography
+            H = None
+            if self.ref_img is not None and self.ref_des is not None:
+                try:
+                    kp, des = self.orb.detectAndCompute(proc, None)
+                    if des is not None and len(kp) > 10:
+                        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+                        matches = bf.match(self.ref_des, des)
+                        matches = sorted(matches, key=lambda x: x.distance)
+                        good_matches = matches[:50]
+                        if len(good_matches) >= 10:
+                            # Scale keypoint coordinates back to high-resolution
+                            scale_back = w / self.process_width
+                            src_pts = np.float32([self.ref_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2) * scale_back
+                            dst_pts = np.float32([kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2) * scale_back
+                            H_est, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                            if H_est is not None:
+                                # Validate homography to prevent radical distortions
+                                det = H_est[0, 0] * H_est[1, 1] - H_est[0, 1] * H_est[1, 0]
+                                if 0.8 < det < 1.25 and abs(H_est[2, 0]) < 0.0015 and abs(H_est[2, 1]) < 0.0015:
+                                    H = H_est
+                                    self.last_valid_H = H_est
+                except Exception as e:
+                    print(f"[Detector Alignment Error] {e}")
+
+            # Fallback to last known valid homography if current one failed
+            if H is None and self.last_valid_H is not None:
+                H = self.last_valid_H
+
+            # Warp slot polygons to match current camera perspective
+            active_slots = {}
+            if H is not None:
+                for slot_id, slot in self.slots.slots.items():
+                    try:
+                        coords = list(slot.polygon.exterior.coords[:-1])
+                        warped_coords = []
+                        for sx, sy in coords:
+                            pt = np.array([sx, sy, 1.0])
+                            warped_pt = H @ pt
+                            w_z = warped_pt[2] if warped_pt[2] != 0 else 1.0
+                            warped_coords.append((warped_pt[0] / w_z, warped_pt[1] / w_z))
+                        active_slots[slot_id] = Polygon(warped_coords)
+                    except Exception:
+                        active_slots[slot_id] = slot.polygon
+            else:
+                for slot_id, slot in self.slots.slots.items():
+                    active_slots[slot_id] = slot.polygon
+
             # 1. YOLO inference
             # Detect multiple vehicle types (bicycle, car, motorcycle, bus, truck) to let YOLO
             # differentiate them correctly, then filter out everything except cars (class 2).
@@ -242,6 +306,20 @@ class ParkingDetector:
                         pos_hist.pop(0)
                     pos_hist.append((cx_val, cy_val))
 
+                    # Compute movement speed to see if vehicle is stopped
+                    is_stopped = False
+                    if len(pos_hist) >= 3:
+                        total_movement = 0
+                        for idx in range(1, len(pos_hist)):
+                            dx = pos_hist[idx][0] - pos_hist[idx-1][0]
+                            dy = pos_hist[idx][1] - pos_hist[idx-1][1]
+                            total_movement += np.sqrt(dx**2 + dy**2)
+                        avg_movement = total_movement / (len(pos_hist) - 1)
+                        if avg_movement < 8.0:
+                            is_stopped = True
+                    else:
+                        avg_movement = 999.0  # Assumed moving until history is loaded
+
                     # Calculate vehicle footprint (bottom 25% of its bounding box)
                     x1_f, y1_f, x2_f, y2_f = xyxy
                     y_footprint = y2_f - 0.25 * (y2_f - y1_f)
@@ -252,13 +330,13 @@ class ParkingDetector:
                     max_overlap_area = 0.0
                     best_overlap_ratio = 0.0
                     
-                    for slot in self.slots.slots.values():
+                    for s_id, slot_poly in active_slots.items():
                         try:
-                            intersection = footprint_poly.intersection(slot.polygon)
+                            intersection = footprint_poly.intersection(slot_poly)
                             area = intersection.area
                             if area > max_overlap_area:
                                 max_overlap_area = area
-                                slot_id = slot.id
+                                slot_id = s_id
                                 best_overlap_ratio = area / footprint_poly.area
                         except Exception:
                             pass
@@ -270,22 +348,16 @@ class ParkingDetector:
                         slot_id = None
                         self._track_slot_overlaps[track_id] = 0.0
 
-                    if slot_id is None:
-                        # Vehicle is not in any slot, make sure it is unassigned
+                    # If the car is not in a slot, or if the car is still moving (not stopped),
+                    # it does NOT occupy any slot.
+                    if slot_id is None or not is_stopped:
                         old_slot = self._track_slot_assignments.pop(track_id, None)
                         if old_slot:
                             self._handle_vehicle_exit(track_id, old_slot)
                             
-                        # Compute status for non-parked vehicles (stopped vs searching)
-                        if len(pos_hist) >= 3:
-                            total_movement = 0
-                            for idx in range(1, len(pos_hist)):
-                                dx = pos_hist[idx][0] - pos_hist[idx-1][0]
-                                dy = pos_hist[idx][1] - pos_hist[idx-1][1]
-                                total_movement += np.sqrt(dx**2 + dy**2)
-                            avg_movement = total_movement / (len(pos_hist) - 1)
-                            
-                            if avg_movement < 8.0:
+                        if slot_id is None:
+                            # Outside all slots
+                            if is_stopped:
                                 self._outside_parked_frames[track_id] += 1
                                 if self._outside_parked_frames[track_id] >= 15:
                                     self._track_statuses[track_id] = "outside_parking"
@@ -302,11 +374,13 @@ class ParkingDetector:
                                 self._track_statuses[track_id] = "searching"
                                 self._active_violations.pop(track_id, None)
                         else:
+                            # Moving inside a slot
+                            self._outside_parked_frames[track_id] = 0
                             self._track_statuses[track_id] = "searching"
                             self._active_violations.pop(track_id, None)
                         continue
 
-                    # Vehicle is in a slot, so it is parked. Reset outside violation states
+                    # Vehicle is stationary in a slot, so it is parked
                     self._outside_parked_frames[track_id] = 0
                     
                     overlap_ratio = self._track_slot_overlaps.get(track_id, 1.0)
@@ -370,25 +444,32 @@ class ParkingDetector:
                                 daemon=True
                             ).start()
 
-            # 5. Handle disappeared tracks (exits)
-            all_assigned_track_ids = list(self._track_slot_assignments.keys())
-            for tid in all_assigned_track_ids:
+            # 5. Handle disappeared tracks (exits) and metadata cleanup with a grace period
+            all_tracked_ids = set(self._track_positions.keys()) | set(self._track_slot_assignments.keys())
+            for tid in all_tracked_ids:
                 if tid not in active_track_ids:
-                    # Vehicle has exited
+                    is_parked = tid in self._track_slot_assignments
+                    is_outside = self._track_statuses.get(tid) == "outside_parking"
+                    
+                    if is_parked or is_outside:
+                        self._track_missing_count[tid] += 1
+                        if self._track_missing_count[tid] < 30:  # 30 frames grace period
+                            continue
+                    
+                    # If grace period expires (or it was just a searching car), clean up
                     slot_id = self._track_slot_assignments.pop(tid, None)
                     if slot_id:
                         self._handle_vehicle_exit(tid, slot_id)
-
-            # Clean up metadata for inactive tracks
-            all_tracked_ids = list(self._track_positions.keys())
-            for tid in all_tracked_ids:
-                if tid not in active_track_ids:
+                    
                     self._track_positions.pop(tid, None)
                     self._track_statuses.pop(tid, None)
                     self._ocr_in_progress.pop(tid, None)
                     self._outside_parked_frames.pop(tid, None)
                     self._active_violations.pop(tid, None)
                     self._track_slot_overlaps.pop(tid, None)
+                    self._track_missing_count.pop(tid, None)
+                else:
+                    self._track_missing_count[tid] = 0
 
             # Update live stats
             self.state.update_slots(
@@ -403,7 +484,7 @@ class ParkingDetector:
                 self.state.violations = list(self._active_violations.values())
 
             # Annotate stream frame (use high-resolution frame)
-            annotated = self._annotate(frame, detections)
+            annotated = self._annotate(frame, detections, active_slots)
             
             # Encode frame as JPEG
             _, jpg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
@@ -484,12 +565,14 @@ class ParkingDetector:
         finally:
             self._ocr_in_progress[track_id] = False
 
-    def _annotate(self, frame: np.ndarray, detections: sv.Detections) -> np.ndarray:
+    def _annotate(self, frame: np.ndarray, detections: sv.Detections, active_slots: dict) -> np.ndarray:
         out = frame.copy()
         
         # Render slot overlays
         for slot in self.slots.slots.values():
-            pts = np.array(list(slot.polygon.exterior.coords[:-1]), dtype=np.int32)
+            # Get warped coordinates
+            poly = active_slots.get(slot.id, slot.polygon)
+            pts = np.array(list(poly.exterior.coords[:-1]), dtype=np.int32)
             
             # Draw color depending on status (free: green, improperly_parked: orange, occupied: red)
             if slot.status == "free":
