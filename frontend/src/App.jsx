@@ -429,6 +429,31 @@ export default function App() {
               );
             })()}
 
+            {/* Active Wrong Parking Alerts Card */}
+            {snapshot.violations && snapshot.violations.length > 0 && (
+              <div className="glass-panel" style={{ background: 'rgba(239, 68, 68, 0.05)', border: '1.5px solid #f59e0b', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 700, color: '#f59e0b', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  Active Parking Alerts
+                </h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {snapshot.violations.map((v, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', background: 'rgba(0,0,0,0.2)', padding: 10, borderRadius: 6, fontSize: 12, borderLeft: `3px solid ${v.type === 'improper_parking' ? '#f59e0b' : '#a855f7'}` }}>
+                      <span style={{ fontSize: 14 }}>⚠️</span>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <span style={{ fontWeight: 600, color: v.type === 'improper_parking' ? '#f59e0b' : '#c084fc' }}>
+                          {v.type === 'improper_parking' ? `Slot ${v.slot_id} Spillover` : 'Driving Lane Blockage'}
+                        </span>
+                        <span className="text-muted" style={{ fontSize: 11 }}>{v.description}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Quick Section Switcher Info */}
             <div className="glass-panel" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border)', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
               <h3 style={{ fontSize: 13, fontWeight: 600 }}>Active Feeds Monitor</h3>
@@ -440,7 +465,7 @@ export default function App() {
                   const totalSlots = s.slots ? s.slots.length : 0;
                   const occupiedCount = (s.slots || []).filter(sl => {
                     const state = snapshot.slots.find(snap => String(snap.slot_id) === String(sl.id));
-                    return state ? state.status === 'occupied' : false;
+                    return state ? state.status !== 'free' : false;
                   }).length;
                   const isFull = occupiedCount === totalSlots;
 
@@ -487,26 +512,47 @@ export default function App() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 14 }}>
               {slots.map(s => {
                 const isOccupied = s.status === 'occupied'
+                const isImproper = s.status === 'improperly_parked'
+                
+                let bg = 'var(--green-bg)'
+                let border = 'var(--green)'
+                let glow = 'var(--green-glow)'
+                let textColor = 'var(--green)'
+                
+                if (isOccupied) {
+                  bg = 'var(--red-bg)'
+                  border = 'var(--red)'
+                  glow = 'var(--red-glow)'
+                  textColor = 'var(--red)'
+                } else if (isImproper) {
+                  bg = 'rgba(245, 158, 11, 0.08)'
+                  border = '#f59e0b'
+                  glow = 'rgba(245, 158, 11, 0.15)'
+                  textColor = '#f59e0b'
+                }
+
                 return (
                   <div
                     key={s.slot_id}
                     onClick={() => setSelectedSlot(s)}
                     style={{
-                      background: isOccupied ? 'var(--red-bg)' : 'var(--green-bg)',
-                      border: `1.5px solid ${isOccupied ? 'var(--red)' : 'var(--green)'}`,
+                      background: bg,
+                      border: `1.5px solid ${border}`,
                       borderRadius: 'var(--radius-sm)',
                       padding: 16,
                       textAlign: 'center',
                       cursor: 'pointer',
                       transition: 'transform 0.2s',
-                      boxShadow: isOccupied ? '0 4px 12px var(--red-glow)' : '0 4px 12px var(--green-glow)'
+                      boxShadow: `0 4px 12px ${glow}`
                     }}
                     onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.04)'}
                     onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
                   >
-                    <div style={{ fontSize: 16, fontWeight: 700, color: isOccupied ? 'var(--red)' : 'var(--green)' }}>Slot {s.slot_id}</div>
-                    <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: '6px 0' }}>{s.status}</div>
-                    {isOccupied && (
+                    <div style={{ fontSize: 16, fontWeight: 700, color: textColor }}>Slot {s.slot_id}</div>
+                    <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: '6px 0' }}>
+                      {isImproper ? 'Improperly Parked' : s.status}
+                    </div>
+                    {(isOccupied || isImproper) && (
                       <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, background: 'rgba(0,0,0,0.2)', padding: '2px 4px', borderRadius: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {s.plate || `Track #${s.track_id}`}
                       </div>
@@ -524,8 +570,8 @@ export default function App() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: 12 }}>
                   <span style={{ fontSize: 20, fontWeight: 700 }}>Slot ID: {selectedSlot.slot_id}</span>
-                  <span style={{ color: selectedSlot.status === 'occupied' ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>
-                    {selectedSlot.status.toUpperCase()}
+                  <span style={{ color: selectedSlot.status === 'occupied' ? 'var(--red)' : (selectedSlot.status === 'improperly_parked' ? '#f59e0b' : 'var(--green)'), fontWeight: 600 }}>
+                    {selectedSlot.status.replace('_', ' ').toUpperCase()}
                   </span>
                 </div>
                 

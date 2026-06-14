@@ -68,10 +68,10 @@ class SlotManager:
                 return slot.id
         return None
 
-    def occupy(self, slot_id: str, track_id: int, plate: Optional[str] = None):
+    def occupy(self, slot_id: str, track_id: int, plate: Optional[str] = None, status: str = "occupied"):
         if slot_id in self.slots:
             s = self.slots[slot_id]
-            s.status   = "occupied"
+            s.status   = status
             s.track_id = track_id
             if plate:
                 s.plate = plate
@@ -113,4 +113,4 @@ class SlotManager:
 
     @property
     def occupied_count(self) -> int:
-        return sum(1 for s in self.slots.values() if s.status == "occupied")
+        return sum(1 for s in self.slots.values() if s.status != "free")

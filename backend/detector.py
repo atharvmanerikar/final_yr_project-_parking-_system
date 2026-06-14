@@ -20,6 +20,7 @@ import numpy as np
 from datetime import datetime
 from collections import defaultdict, Counter
 from typing import Optional
+from shapely.geometry import Polygon
 
 import supervision as sv
 from ultralytics import YOLO
@@ -39,6 +40,7 @@ class ParkingState:
         self.latest_frame: Optional[bytes] = None  # Annotated JPEG bytes
         self.slot_snapshot: list = []             # List of serializable slot dicts
         self.events: list = []                    # Recent 20 events cache
+        self.violations: list = []                # Active wrong parking alerts
         self.stats = {
             "total": 0,
             "free": 0,
@@ -89,6 +91,7 @@ class ParkingState:
                 "slots": self.slot_snapshot,
                 "stats": self.stats,
                 "events": self.events[:20],
+                "violations": self.violations
             }
 
 
@@ -136,6 +139,11 @@ class ParkingDetector:
         self._track_statuses: dict[int, str] = {}
         self._plate_histories = defaultdict(list)
         self._alpr_attempts: dict[int, int] = defaultdict(int)
+        
+        # Violations metadata
+        self._outside_parked_frames: dict[int, int] = defaultdict(int)
+        self._active_violations: dict[int, dict] = {}
+        self._track_slot_overlaps: dict[int, float] = {}
 
         # Annotators
         self._box_ann = sv.BoxAnnotator(thickness=2)
@@ -234,12 +242,36 @@ class ParkingDetector:
                         pos_hist.pop(0)
                     pos_hist.append((cx_val, cy_val))
 
-                    cx = float((xyxy[0] + xyxy[2]) / 2)
-                    cy = float(xyxy[3])  # Use bottom center (ground contact point) instead of centroid to match ground slot geometry
-                    slot_id = self.slots.get_slot_for_centroid(cx, cy)
+                    # Calculate vehicle footprint (bottom 25% of its bounding box)
+                    x1_f, y1_f, x2_f, y2_f = xyxy
+                    y_footprint = y2_f - 0.25 * (y2_f - y1_f)
+                    footprint_poly = Polygon([(x1_f, y_footprint), (x2_f, y_footprint), (x2_f, y2_f), (x1_f, y2_f)])
+                    
+                    # Find slot with highest footprint overlap
+                    slot_id = None
+                    max_overlap_area = 0.0
+                    best_overlap_ratio = 0.0
+                    
+                    for slot in self.slots.slots.values():
+                        try:
+                            intersection = footprint_poly.intersection(slot.polygon)
+                            area = intersection.area
+                            if area > max_overlap_area:
+                                max_overlap_area = area
+                                slot_id = slot.id
+                                best_overlap_ratio = area / footprint_poly.area
+                        except Exception:
+                            pass
+                            
+                    # If highest overlap ratio is too low, treat as not in slot
+                    if slot_id and best_overlap_ratio > 0.15:
+                        self._track_slot_overlaps[track_id] = best_overlap_ratio
+                    else:
+                        slot_id = None
+                        self._track_slot_overlaps[track_id] = 0.0
 
                     if slot_id is None:
-                        # Vehicle is in search space, make sure it is unassigned
+                        # Vehicle is not in any slot, make sure it is unassigned
                         old_slot = self._track_slot_assignments.pop(track_id, None)
                         if old_slot:
                             self._handle_vehicle_exit(track_id, old_slot)
@@ -252,13 +284,44 @@ class ParkingDetector:
                                 dy = pos_hist[idx][1] - pos_hist[idx-1][1]
                                 total_movement += np.sqrt(dx**2 + dy**2)
                             avg_movement = total_movement / (len(pos_hist) - 1)
-                            self._track_statuses[track_id] = "jst stopped" if avg_movement < 8.0 else "searching"
+                            
+                            if avg_movement < 8.0:
+                                self._outside_parked_frames[track_id] += 1
+                                if self._outside_parked_frames[track_id] >= 15:
+                                    self._track_statuses[track_id] = "outside_parking"
+                                    self._active_violations[track_id] = {
+                                        "type": "outside_parking",
+                                        "track_id": track_id,
+                                        "description": f"Vehicle ID {track_id} is parked outside any marked slots (blocking lane)."
+                                    }
+                                else:
+                                    self._track_statuses[track_id] = "jst stopped"
+                                    self._active_violations.pop(track_id, None)
+                            else:
+                                self._outside_parked_frames[track_id] = 0
+                                self._track_statuses[track_id] = "searching"
+                                self._active_violations.pop(track_id, None)
                         else:
                             self._track_statuses[track_id] = "searching"
+                            self._active_violations.pop(track_id, None)
                         continue
 
-                    # Vehicle is in a slot, so it is parked
-                    self._track_statuses[track_id] = "parked"
+                    # Vehicle is in a slot, so it is parked. Reset outside violation states
+                    self._outside_parked_frames[track_id] = 0
+                    
+                    overlap_ratio = self._track_slot_overlaps.get(track_id, 1.0)
+                    if overlap_ratio < 0.80:
+                        self._track_statuses[track_id] = "improperly_parked"
+                        self._active_violations[track_id] = {
+                            "type": "improper_parking",
+                            "track_id": track_id,
+                            "slot_id": slot_id,
+                            "overlap_ratio": round(overlap_ratio * 100, 1),
+                            "description": f"Vehicle ID {track_id} is spilling out of Slot {slot_id} ({round(overlap_ratio*100)}% inside)."
+                        }
+                    else:
+                        self._track_statuses[track_id] = "parked"
+                        self._active_violations.pop(track_id, None)
 
                     old_slot = self._track_slot_assignments.get(track_id)
                     
@@ -270,11 +333,9 @@ class ParkingDetector:
                             
                         self._track_slot_assignments[track_id] = slot_id
                         self._entry_times[track_id] = datetime.utcnow()
-                        self.slots.occupy(slot_id, track_id)
                         
                         # Log Entry event to DB
                         log_event(track_id, slot_id, None, None, "entry")
-                        update_slot_state(slot_id, "occupied", track_id, None, self._entry_times[track_id])
                         
                         self.state.push_event({
                             "track_id": track_id,
@@ -286,6 +347,11 @@ class ParkingDetector:
                             "dwell_secs": None
                         })
                         print(f"[Detector] Entry: Track {track_id} -> Slot {slot_id}")
+
+                    # Update slot occupancy states in local memory and DB
+                    db_status = "improperly_parked" if self._track_statuses[track_id] == "improperly_parked" else "occupied"
+                    self.slots.occupy(slot_id, track_id, status=db_status)
+                    update_slot_state(slot_id, db_status, track_id, self._track_plates.get(track_id), self._entry_times[track_id])
 
                     # 4. Trigger Two-Stage ALPR (with temporal voting) asynchronously
                     # Only trigger plate detection once the vehicle has been parked in the slot for at least 1.2 seconds
@@ -320,6 +386,9 @@ class ParkingDetector:
                     self._track_positions.pop(tid, None)
                     self._track_statuses.pop(tid, None)
                     self._ocr_in_progress.pop(tid, None)
+                    self._outside_parked_frames.pop(tid, None)
+                    self._active_violations.pop(tid, None)
+                    self._track_slot_overlaps.pop(tid, None)
 
             # Update live stats
             self.state.update_slots(
@@ -329,6 +398,9 @@ class ParkingDetector:
                 len(self.slots.slots),
                 fps
             )
+            # Expose active violations to state
+            with self.state._lock:
+                self.state.violations = list(self._active_violations.values())
 
             # Annotate stream frame (use high-resolution frame)
             annotated = self._annotate(frame, detections)
@@ -385,6 +457,7 @@ class ParkingDetector:
                 
                 # Retrieve entry time safely
                 entry_time = self._entry_times.get(track_id)
+                db_status = "improperly_parked" if self._track_statuses.get(track_id) == "improperly_parked" else "occupied"
                 
                 old_plate = self._track_plates.get(track_id)
                 if best_plate != old_plate:
@@ -393,7 +466,7 @@ class ParkingDetector:
                     
                     # Log Event and update state in DB
                     log_event(track_id, slot_id, best_plate, score, "ocr_update")
-                    update_slot_state(slot_id, "occupied", track_id, best_plate, entry_time)
+                    update_slot_state(slot_id, db_status, track_id, best_plate, entry_time)
                     
                     # Update current cache list
                     self.state.push_event({
@@ -417,7 +490,14 @@ class ParkingDetector:
         # Render slot overlays
         for slot in self.slots.slots.values():
             pts = np.array(list(slot.polygon.exterior.coords[:-1]), dtype=np.int32)
-            color = (46, 216, 130) if slot.status == "free" else (92, 92, 255)  # BGR green / red
+            
+            # Draw color depending on status (free: green, improperly_parked: orange, occupied: red)
+            if slot.status == "free":
+                color = (46, 216, 130)            # Green (BGR)
+            elif slot.status == "improperly_parked":
+                color = (0, 140, 255)             # Orange (BGR)
+            else:
+                color = (92, 92, 255)             # Red (BGR)
             
             # Semi-transparent overlay
             overlay = out.copy()
@@ -446,13 +526,19 @@ class ParkingDetector:
                 
                 # Colors mapping (BGR)
                 if status == "parked":
-                    color = (46, 216, 130)  # Green
+                    color = (46, 216, 130)        # Green
                     text_color = (0, 0, 0)
+                elif status == "improperly_parked":
+                    color = (0, 140, 255)         # Orange
+                    text_color = (255, 255, 255)
+                elif status == "outside_parking":
+                    color = (255, 0, 255)         # Purple/Magenta
+                    text_color = (255, 255, 255)
                 elif status == "jst stopped":
-                    color = (92, 92, 255)  # Red
+                    color = (92, 92, 255)         # Red
                     text_color = (255, 255, 255)
                 else:
-                    color = (46, 211, 251)  # Yellow/Orange
+                    color = (46, 211, 251)        # Yellow/Orange
                     text_color = (0, 0, 0)
                     
                 # Draw bounding box

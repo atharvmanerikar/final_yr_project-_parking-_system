@@ -9,7 +9,9 @@ import sqlite3
 from datetime import datetime
 import os
 
-DB_PATH = "backend/parking.db"
+from backend.config import settings
+
+DB_PATH = str(settings.PROJECT_ROOT / "backend/parking.db")
 
 def get_connection():
     # Ensure directory exists
