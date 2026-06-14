@@ -280,6 +280,17 @@ class ParkingDetector:
             # 2. ByteTrack tracking
             detections = self.tracker.update_with_detections(detections)
 
+            # Extract center points in processed space (640px) for movement tracking
+            proc_centers = {}
+            if detections.tracker_id is not None:
+                for idx, track_id in enumerate(detections.tracker_id):
+                    if track_id is not None:
+                        t_id = int(track_id)
+                        p_xyxy = detections.xyxy[idx]
+                        cx_proc = float((p_xyxy[0] + p_xyxy[2]) / 2)
+                        cy_proc = float((p_xyxy[1] + p_xyxy[3]) / 2)
+                        proc_centers[t_id] = (cx_proc, cy_proc)
+
             # Scale detections back to the high-resolution frame space
             if len(detections) > 0:
                 scale_back = w / self.process_width
@@ -298,15 +309,15 @@ class ParkingDetector:
 
                     xyxy = detections.xyxy[i]
                     
-                    # Track position history for status classification
-                    cx_val = float((xyxy[0] + xyxy[2]) / 2)
-                    cy_val = float((xyxy[1] + xyxy[3]) / 2)
-                    pos_hist = self._track_positions[track_id]
-                    if len(pos_hist) >= 5:
-                        pos_hist.pop(0)
-                    pos_hist.append((cx_val, cy_val))
+                    # Track position history in processed space for status classification
+                    proc_pt = proc_centers.get(track_id)
+                    if proc_pt:
+                        pos_hist = self._track_positions[track_id]
+                        if len(pos_hist) >= 5:
+                            pos_hist.pop(0)
+                        pos_hist.append(proc_pt)
 
-                    # Compute movement speed to see if vehicle is stopped
+                    # Compute movement speed in processed space to see if vehicle is stopped
                     is_stopped = False
                     if len(pos_hist) >= 3:
                         total_movement = 0
@@ -315,7 +326,7 @@ class ParkingDetector:
                             dy = pos_hist[idx][1] - pos_hist[idx-1][1]
                             total_movement += np.sqrt(dx**2 + dy**2)
                         avg_movement = total_movement / (len(pos_hist) - 1)
-                        if avg_movement < 8.0:
+                        if avg_movement < 4.0:  # Threshold of 4.0 pixels in 640px processed space
                             is_stopped = True
                     else:
                         avg_movement = 999.0  # Assumed moving until history is loaded
@@ -348,101 +359,108 @@ class ParkingDetector:
                         slot_id = None
                         self._track_slot_overlaps[track_id] = 0.0
 
+                    old_status = self._track_statuses.get(track_id)
+                    new_status = "searching"
+
                     # If the car is not in a slot, or if the car is still moving (not stopped),
                     # it does NOT occupy any slot.
                     if slot_id is None or not is_stopped:
-                        old_slot = self._track_slot_assignments.pop(track_id, None)
-                        if old_slot:
-                            self._handle_vehicle_exit(track_id, old_slot)
+                        old_assigned_slot = self._track_slot_assignments.pop(track_id, None)
+                        if old_assigned_slot:
+                            self._handle_vehicle_exit(track_id, old_assigned_slot)
                             
                         if slot_id is None:
                             # Outside all slots
                             if is_stopped:
                                 self._outside_parked_frames[track_id] += 1
                                 if self._outside_parked_frames[track_id] >= 15:
-                                    self._track_statuses[track_id] = "outside_parking"
+                                    new_status = "outside_parking"
                                     self._active_violations[track_id] = {
                                         "type": "outside_parking",
                                         "track_id": track_id,
                                         "description": f"Vehicle ID {track_id} is parked outside any marked slots (blocking lane)."
                                     }
                                 else:
-                                    self._track_statuses[track_id] = "jst stopped"
+                                    new_status = "jst stopped"
                                     self._active_violations.pop(track_id, None)
                             else:
                                 self._outside_parked_frames[track_id] = 0
-                                self._track_statuses[track_id] = "searching"
+                                new_status = "searching"
                                 self._active_violations.pop(track_id, None)
                         else:
                             # Moving inside a slot
                             self._outside_parked_frames[track_id] = 0
-                            self._track_statuses[track_id] = "searching"
+                            new_status = "searching"
                             self._active_violations.pop(track_id, None)
-                        continue
-
-                    # Vehicle is stationary in a slot, so it is parked
-                    self._outside_parked_frames[track_id] = 0
-                    
-                    overlap_ratio = self._track_slot_overlaps.get(track_id, 1.0)
-                    if overlap_ratio < 0.80:
-                        self._track_statuses[track_id] = "improperly_parked"
-                        self._active_violations[track_id] = {
-                            "type": "improper_parking",
-                            "track_id": track_id,
-                            "slot_id": slot_id,
-                            "overlap_ratio": round(overlap_ratio * 100, 1),
-                            "description": f"Vehicle ID {track_id} is spilling out of Slot {slot_id} ({round(overlap_ratio*100)}% inside)."
-                        }
                     else:
-                        self._track_statuses[track_id] = "parked"
-                        self._active_violations.pop(track_id, None)
-
-                    old_slot = self._track_slot_assignments.get(track_id)
-                    
-                    # Check if this is a newly assigned slot (entry event)
-                    if old_slot != slot_id:
-                        # If it was assigned to a different slot previously, free that one first
-                        if old_slot:
-                            self._handle_vehicle_exit(track_id, old_slot)
-                            
-                        self._track_slot_assignments[track_id] = slot_id
-                        self._entry_times[track_id] = datetime.utcnow()
+                        # Vehicle is stationary in a slot, so it is parked
+                        self._outside_parked_frames[track_id] = 0
                         
-                        # Log Entry event to DB
-                        log_event(track_id, slot_id, None, None, "entry")
+                        overlap_ratio = self._track_slot_overlaps.get(track_id, 1.0)
+                        if overlap_ratio < 0.80:
+                            new_status = "improperly_parked"
+                            self._active_violations[track_id] = {
+                                "type": "improper_parking",
+                                "track_id": track_id,
+                                "slot_id": slot_id,
+                                "overlap_ratio": round(overlap_ratio * 100, 1),
+                                "description": f"Vehicle ID {track_id} is spilling out of Slot {slot_id} ({round(overlap_ratio*100)}% inside)."
+                            }
+                        else:
+                            new_status = "parked"
+                            self._active_violations.pop(track_id, None)
+
+                        old_assigned_slot = self._track_slot_assignments.get(track_id)
                         
-                        self.state.push_event({
-                            "track_id": track_id,
-                            "slot_id": slot_id,
-                            "plate": None,
-                            "ocr_conf": None,
-                            "event_type": "entry",
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "dwell_secs": None
-                        })
-                        print(f"[Detector] Entry: Track {track_id} -> Slot {slot_id}")
-
-                    # Update slot occupancy states in local memory and DB
-                    db_status = "improperly_parked" if self._track_statuses[track_id] == "improperly_parked" else "occupied"
-                    self.slots.occupy(slot_id, track_id, status=db_status)
-                    update_slot_state(slot_id, db_status, track_id, self._track_plates.get(track_id), self._entry_times[track_id])
-
-                    # 4. Trigger Two-Stage ALPR (with temporal voting) asynchronously
-                    # Only trigger plate detection once the vehicle has been parked in the slot for at least 1.2 seconds
-                    time_in_slot = (datetime.utcnow() - self._entry_times[track_id]).total_seconds() if track_id in self._entry_times else 0
-                    if time_in_slot >= 1.2:
-                        if not self._ocr_in_progress[track_id] and self._alpr_attempts[track_id] < 10:
-                            # Start OCR in background thread
-                            self._ocr_in_progress[track_id] = True
-                            self._alpr_attempts[track_id] += 1
+                        # Check if this is a newly assigned slot (entry event)
+                        if old_assigned_slot != slot_id:
+                            # If it was assigned to a different slot previously, free that one first
+                            if old_assigned_slot:
+                                self._handle_vehicle_exit(track_id, old_assigned_slot)
+                                
+                            self._track_slot_assignments[track_id] = slot_id
+                            self._entry_times[track_id] = datetime.utcnow()
                             
-                            # Crop from high-resolution frame
-                            crop = crop_from_bbox(frame, xyxy)
-                            threading.Thread(
-                                target=self._async_ocr_worker,
-                                args=(crop, track_id, slot_id),
-                                daemon=True
-                            ).start()
+                            # Log Entry event to DB
+                            log_event(track_id, slot_id, None, None, "entry")
+                            
+                            self.state.push_event({
+                                "track_id": track_id,
+                                "slot_id": slot_id,
+                                "plate": None,
+                                "ocr_conf": None,
+                                "event_type": "entry",
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "dwell_secs": None
+                            })
+                            print(f"[Detector] Entry: Track {track_id} -> Slot {slot_id}")
+
+                        # Update slot occupancy states in local memory and DB
+                        db_status = "improperly_parked" if new_status == "improperly_parked" else "occupied"
+                        self.slots.occupy(slot_id, track_id, status=db_status)
+                        update_slot_state(slot_id, db_status, track_id, self._track_plates.get(track_id), self._entry_times[track_id])
+
+                        # 4. Trigger Two-Stage ALPR (with temporal voting) asynchronously
+                        # Only trigger plate detection once the vehicle has been parked in the slot for at least 1.2 seconds
+                        time_in_slot = (datetime.utcnow() - self._entry_times[track_id]).total_seconds() if track_id in self._entry_times else 0
+                        if time_in_slot >= 1.2:
+                            if not self._ocr_in_progress[track_id] and self._alpr_attempts[track_id] < 10:
+                                # Start OCR in background thread
+                                self._ocr_in_progress[track_id] = True
+                                self._alpr_attempts[track_id] += 1
+                                
+                                # Crop from high-resolution frame
+                                crop = crop_from_bbox(frame, xyxy)
+                                threading.Thread(
+                                    target=self._async_ocr_worker,
+                                    args=(crop, track_id, slot_id),
+                                    daemon=True
+                                ).start()
+
+                    # Save and log status transitions
+                    if new_status != old_status:
+                        print(f"[Detector Status Change] Track {track_id}: {old_status} -> {new_status} (avg_movement={avg_movement:.2f}px)")
+                    self._track_statuses[track_id] = new_status
 
             # 5. Handle disappeared tracks (exits) and metadata cleanup with a grace period
             all_tracked_ids = set(self._track_positions.keys()) | set(self._track_slot_assignments.keys())
