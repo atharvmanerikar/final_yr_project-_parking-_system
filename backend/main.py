@@ -392,6 +392,28 @@ async def start_calibration():
     return {"status": "calibration_window_opened"}
 
 
+@app.post("/api/control/calibrate_navigation")
+async def start_navigation_calibration():
+    """Stops the detector and launches the interactive navigation map calibration window."""
+    import subprocess
+    global detector
+    
+    # Stop the detector thread to free CPU/devices
+    if detector:
+        detector.stop()
+        
+    # Open the map calibration window
+    python_exe = r"E:\smart_parking_v2\venv\Scripts\python.exe"
+    script_path = str(settings.PROJECT_ROOT / "backend/calibrate_navigation.py")
+    
+    cmd = [python_exe, script_path]
+    print(f"[Control API] Opening navigation calibration: {' '.join(cmd)}")
+    subprocess.Popen(cmd)
+    
+    return {"status": "navigation_calibration_opened"}
+
+
+
 # ── Video Streaming MJPEG Feed ──
 
 async def _frame_generator():

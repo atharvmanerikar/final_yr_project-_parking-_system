@@ -272,6 +272,24 @@ export default function App() {
     }
   }
 
+  const calibrateNavigationMap = async () => {
+    try {
+      const res = await fetch('/api/control/calibrate_navigation', { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.error) {
+          alert(`Error launching map calibrator: ${data.error}`)
+          return
+        }
+        setPipelineRunning(false)
+        alert('Navigation Map Calibrator opened! Place entry & turn nodes (Phase 1), then draw slot polygons (Phase 2). Input names in command window.')
+      }
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+
   // Logs search and clear handlers
   const handleSearch = () => {
     setFilterPlate(inputPlate)
@@ -616,7 +634,16 @@ export default function App() {
 
             {/* Smart Navigation Panel */}
             <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <h3 style={{ fontSize: 13, fontWeight: 600, color: '#60a5fa' }}>Smart Navigation</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ fontSize: 13, fontWeight: 600, color: '#60a5fa' }}>Smart Navigation</h3>
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={calibrateNavigationMap} 
+                  style={{ padding: '6px 12px', fontSize: 11, background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)' }}
+                >
+                  Calibrate Map
+                </button>
+              </div>
               <p style={{ fontSize: 12, color: '#94a3b8', margin: '4px 0 8px 0' }}>
                 Best Route: {bestSlot === "FULL" ? <strong style={{ color: '#ef4444' }}>Parking Lot Full 🚫</strong> : <span>Go to <strong style={{ color: '#10b981' }}>Slot {bestSlot}</strong></span>}
               </p>
