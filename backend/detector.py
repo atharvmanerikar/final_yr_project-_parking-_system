@@ -193,9 +193,33 @@ class ParkingDetector:
         fps_frames = 0
         fps = 0.0
 
+        # Get video properties for real-time skipping
+        import numpy as np
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        if video_fps <= 0 or np.isnan(video_fps):
+            video_fps = 30.0
+            
+        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        is_video_file = total_frames > 0
+        video_start_time = time.time()
+        frame_counter = 0
+
         print(f"[Detector] Pipeline started on source: {source_label}")
 
         while self._running:
+            if is_video_file:
+                elapsed_wall = time.time() - video_start_time
+                target_frame = int(elapsed_wall * video_fps)
+                current_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
+                skip_count = target_frame - current_frame
+                
+                if skip_count > 0:
+                    if skip_count > 100: # large jump, seek directly
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                    else: # small jump, fast grab
+                        for _ in range(int(skip_count - 1)):
+                            cap.grab()
+
             ret, frame = cap.read()
             if not ret:
                 # Loop video files if they end
@@ -206,6 +230,8 @@ class ParkingDetector:
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    video_start_time = time.time() # Reset clock!
+                    frame_counter = 0
                     time.sleep(0.1)  # Brief pause to prevent CPU pegging if read failures persist
                     continue
                 else:
@@ -218,9 +244,11 @@ class ParkingDetector:
             scale = self.process_width / w
             proc = cv2.resize(frame, (self.process_width, int(h * scale)))
 
-            # Align current frame to reference frame using homography
+            frame_counter += 1
+
+            # Align current frame to reference frame using homography (run once every 10 frames)
             H = None
-            if self.ref_img is not None and self.ref_des is not None:
+            if self.ref_img is not None and self.ref_des is not None and (frame_counter % 10 == 0 or self.last_valid_H is None):
                 try:
                     kp, des = self.orb.detectAndCompute(proc, None)
                     if des is not None and len(kp) > 10:
