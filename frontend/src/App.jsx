@@ -157,23 +157,23 @@ export default function App() {
     ctx.stroke()
 
     // 2. Draw slots outlines & occupancy fill
-    const parkingSlots = parkingSlotsData.slots
+    const parkingSlots = parkingSlotsData.slots || []
     const slotStatus = {}
     snapshot.slots.forEach(s => {
       slotStatus[s.slot_id] = s.status === 'free' ? 'free' : 'occupied'
     })
 
     parkingSlots.forEach((slot) => {
+      const center = slot.center || [0, 0]
+      const cx = center[0] * scaleX
+      const cy = center[1] * scaleY
+
+      // Default slot display size on 2D map
+      const w = 70 * scaleX
+      const h = 45 * scaleY
+
       ctx.beginPath()
-      slot.points.forEach(([x, y], index) => {
-        const scaledX = x * scaleX
-        const scaledY = y * scaleY
-        if (index === 0) {
-          ctx.moveTo(scaledX, scaledY)
-        } else {
-          ctx.lineTo(scaledX, scaledY)
-        }
-      })
+      ctx.rect(cx - w / 2, cy - h / 2, w, h)
       ctx.closePath()
       ctx.fillStyle =
         slotStatus[slot.name] === "occupied"
@@ -186,20 +186,11 @@ export default function App() {
       ctx.stroke()
 
       // Centered Text Label
-      let centerX = 0
-      let centerY = 0
-      slot.points.forEach(([x, y]) => {
-        centerX += x
-        centerY += y
-      })
-      centerX = (centerX / slot.points.length) * scaleX
-      centerY = (centerY / slot.points.length) * scaleY
-
       ctx.fillStyle = "white"
       ctx.font = "bold 9px Inter, sans-serif"
       ctx.textAlign = "center"
       ctx.textBaseline = "middle"
-      ctx.fillText(`Slot ${slot.name}`, centerX, centerY)
+      ctx.fillText(`Slot ${slot.name}`, cx, cy)
     })
 
     // 3. Draw node dots along path joints

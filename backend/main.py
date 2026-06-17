@@ -387,7 +387,9 @@ async def start_calibration():
     
     cmd = [python_exe, script_path, "--image", temp_img_path, "--output", slots_file]
     print(f"[Control API] Opening calibration subprocess: {' '.join(cmd)}")
-    subprocess.Popen(cmd)
+    log_path = settings.PROJECT_ROOT / "backend/calibrate_slots.log"
+    log_file = open(str(log_path), "w", encoding="utf-8")
+    subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
     
     return {"status": "calibration_window_opened"}
 
@@ -408,9 +410,12 @@ async def start_navigation_calibration():
     
     cmd = [python_exe, script_path]
     print(f"[Control API] Opening navigation calibration: {' '.join(cmd)}")
-    subprocess.Popen(cmd)
+    log_path = settings.PROJECT_ROOT / "backend/calibrate_navigation.log"
+    log_file = open(str(log_path), "w", encoding="utf-8")
+    subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
     
     return {"status": "navigation_calibration_opened"}
+
 
 
 

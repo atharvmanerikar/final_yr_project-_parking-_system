@@ -1,9 +1,10 @@
 """
 backend/calibrate_navigation.py
 
-Interactive tool to define routing nodes and slot coordinates on the navigation map.
-Saves backend graph nodes to backend/marked_slots/parking_slots.json and 
-frontend slot polygons to frontend/src/assets/parking_slots.json.
+Interactive tool to define routing nodes (roads) and slot center points.
+- Phase 0: Mark road nodes (entry, R2, R3...). Press ENTER when done.
+- Phase 1: Mark parking slot center points. Type slot ID in terminal.
+- Press S to save and exit.
 """
 
 import cv2
@@ -26,153 +27,158 @@ if not map_image_path.exists():
 img = cv2.imread(str(map_image_path))
 H_orig, W_orig = img.shape[:2]
 
-# Load existing configurations
-nodes = {}
-graph = {}
-if backend_json_path.exists():
-    try:
-        data = json.loads(backend_json_path.read_text(encoding="utf-8"))
-        nodes = data.get("nodes", {})
-        graph = data.get("graph", {})
-    except Exception as e:
-        print(f"Error loading existing backend config: {e}")
-
-# Standard corridor nodes
-corridor_nodes = ["entry", "turn1", "turn2", "center1", "center2", "center3"]
+# Create a clean display frame with extra bottom margin for instructions (leaves map fully visible)
+margin_bottom = 200
+display_h = H_orig + margin_bottom
+display_w = W_orig
 
 # Calibration State
-calibrated_corridor = {}
-calibrated_slots = [] # list of {"name": str, "points": list}
-current_points = []
-phase = 0 # 0: corridor nodes, 1: slot polygons
-corridor_idx = 0
+road_nodes = []     # List of [x, y] coordinates for the road
+slot_spots = []     # List of {"name": str, "center": [x, y], "closest_road": str}
+phase = 0           # 0: Road Nodes, 1: Slot Centers
 window_name = "Navigation Map Calibrator"
 
-def get_node_under_cursor(x, y, threshold=30):
-    for name, pt in calibrated_corridor.items():
-        if np.hypot(x - pt[0], y - pt[1]) < threshold:
-            return name
-    return None
-
 def mouse_callback(event, x, y, flags, param):
-    global corridor_idx, phase, current_points
+    global phase, road_nodes, slot_spots
+    
+    # Restrict clicks to image area
+    if y >= H_orig:
+        return
+        
     if event == cv2.EVENT_LBUTTONDOWN:
         if phase == 0:
-            # Place corridor node
-            node_name = corridor_nodes[corridor_idx]
-            calibrated_corridor[node_name] = [x, y]
-            print(f"[Calibrator] Set {node_name} at [{x}, {y}]")
-            corridor_idx += 1
-            if corridor_idx >= len(corridor_nodes):
-                phase = 1
-                print("\n=== Phase 2: Calibrating Slot Polygons ===")
-                print("Instructions: Click 4 corner points to draw a slot. Press ENTER to complete the slot.")
+            # Add road node
+            road_nodes.append([x, y])
+            node_name = "entry" if len(road_nodes) == 1 else f"R{len(road_nodes)}"
+            print(f"[Calibrator] Road node placed: {node_name} at [{x}, {y}]")
         elif phase == 1:
-            # Draw slot polygon point
-            if len(current_points) < 4:
-                current_points.append([x, y])
-                print(f"[Calibrator] Added slot vertex {len(current_points)}: [{x}, {y}]")
+            # Place slot center
+            print("\n[Calibrator Action Required] Go to terminal and enter Slot ID/Name:")
+            
+            # Temporary UI feedback
+            alert_frame = make_base_display()
+            draw_overlays(alert_frame)
+            # Alert banner on top of image
+            cv2.rectangle(alert_frame, (100, H_orig // 2 - 60), (display_w - 100, H_orig // 2 + 40), (15, 23, 42), -1)
+            cv2.rectangle(alert_frame, (100, H_orig // 2 - 60), (display_w - 100, H_orig // 2 + 40), (59, 130, 246), 3)
+            cv2.putText(alert_frame, "ACTION REQUIRED: Enter Slot ID/Name in your terminal", 
+                        (200, H_orig // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+            cv2.imshow(window_name, alert_frame)
+            cv2.waitKey(100)
+            
+            slot_name = input("Enter Slot Name/ID (e.g. 1, 2, 3): ").strip()
+            if not slot_name:
+                slot_name = str(len(slot_spots) + 1)
+                
+            # Find closest road node
+            closest_node_name = None
+            min_dist = float("inf")
+            for idx, pt in enumerate(road_nodes):
+                name = "entry" if idx == 0 else f"R{idx+1}"
+                dist = np.hypot(x - pt[0], y - pt[1])
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_node_name = name
+                    
+            slot_spots.append({
+                "name": slot_name,
+                "center": [x, y],
+                "closest_road": closest_node_name
+            })
+            print(f"[Calibrator] Saved Slot {slot_name} (routed to {closest_node_name}).")
 
     elif event == cv2.EVENT_RBUTTONDOWN:
         if phase == 0:
-            if corridor_idx > 0:
-                corridor_idx -= 1
-                node_name = corridor_nodes[corridor_idx]
-                if node_name in calibrated_corridor:
-                    del calibrated_corridor[node_name]
-                print(f"[Calibrator] Undo last corridor node. Redefining: {node_name}")
+            if road_nodes:
+                removed = road_nodes.pop()
+                print(f"[Calibrator] Removed road node: {removed}")
         elif phase == 1:
-            if current_points:
-                removed = current_points.pop()
-                print(f"[Calibrator] Removed slot vertex: {removed}")
+            if slot_spots:
+                removed = slot_spots.pop()
+                print(f"[Calibrator] Removed Slot: {removed['name']}")
 
-def draw_hud(frame):
-    # Determine scale factor based on image width
+def make_base_display():
+    # Create canvas with bottom margin
+    canvas = np.zeros((display_h, display_w, 3), dtype=np.uint8)
+    # Slate background for margin
+    canvas[H_orig:, :] = (40, 29, 15) # BGR slate-900 (#0f172a)
+    # Copy map image to top
+    canvas[:H_orig, :] = img
+    return canvas
+
+def draw_overlays(frame):
     scale = W_orig / 1000.0
     
-    box_w = int(520 * scale)
-    box_h = int(120 * scale)
-    
-    # Draw box background
-    cv2.rectangle(frame, (int(15 * scale), int(15 * scale)), (int(15 * scale) + box_w, int(15 * scale) + box_h), (0, 0, 0), -1)
-    cv2.rectangle(frame, (int(15 * scale), int(15 * scale)), (int(15 * scale) + box_w, int(15 * scale) + box_h), (255, 255, 255), int(2 * scale))
-
-    if phase == 0:
-        curr_node = corridor_nodes[corridor_idx]
-        lines = [
-            "PHASE 1: Corridor Nodes Placement",
-            f"Click on the map to define: {curr_node}",
-            f"Progress: {corridor_idx}/{len(corridor_nodes)} nodes set",
-            "LClick=Place  RClick=Undo last node  ESC=Quit"
-        ]
-    else:
-        lines = [
-            "PHASE 2: Slot Polygons Drawing",
-            "Click 4 corners to draw a slot, then press ENTER",
-            f"Slots calibrated: {len(calibrated_slots)}",
-            "ENTER=Save slot  S=Save config & Exit  ESC=Quit"
-        ]
-        
-    font_scale = 0.52 * scale
-    thickness = int(1.5 * scale)
-    if thickness < 1:
-        thickness = 1
-        
-    y_start = int(40 * scale)
-    y_step = int(24 * scale)
-    
-    for i, line in enumerate(lines):
-        color = (96, 165, 250) if i == 0 else (255, 255, 255)
-        cv2.putText(frame, line, (int(25 * scale), y_start + i * y_step), 
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
-
-def redraw():
-    frame = img.copy()
-    scale = W_orig / 1000.0
-    
-    # 1. Draw corridor nodes
-    for name, pt in calibrated_corridor.items():
-        cv2.circle(frame, (pt[0], pt[1]), int(8 * scale), (37, 99, 235), -1) # Blue dot
+    # 1. Draw Road path
+    for idx, pt in enumerate(road_nodes):
+        name = "entry" if idx == 0 else f"R{idx+1}"
+        cv2.circle(frame, (pt[0], pt[1]), int(8 * scale), (249, 115, 22), -1) # Orange dot
         cv2.circle(frame, (pt[0], pt[1]), int(8 * scale), (255, 255, 255), int(1.5 * scale) if int(1.5 * scale) >= 1 else 1)
         cv2.putText(frame, name, (pt[0] + int(12 * scale), pt[1] + int(5 * scale)), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55 * scale, (255, 255, 255), int(2 * scale) if int(2 * scale) >= 1 else 1)
-        cv2.putText(frame, name, (pt[0] + int(12 * scale), pt[1] + int(5 * scale)), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55 * scale, (37, 99, 235), int(1 * scale) if int(1 * scale) >= 1 else 1)
                     
-    # 2. Draw calibrated slots
-    for i, slot in enumerate(calibrated_slots):
-        pts = np.array(slot["points"], dtype=np.int32)
-        cv2.polylines(frame, [pts], True, (34, 197, 94), int(2 * scale) if int(2 * scale) >= 1 else 1) # Green outline
-        
-        # Draw slot label inside centroid
-        cx = int(np.mean(pts[:, 0]))
-        cy = int(np.mean(pts[:, 1]))
+        # Connect to previous node
+        if idx > 0:
+            prev_pt = road_nodes[idx - 1]
+            cv2.line(frame, (prev_pt[0], prev_pt[1]), (pt[0], pt[1]), (249, 115, 22), int(3 * scale))
+
+    # 2. Draw Slot center points & routes to closest road nodes
+    for slot in slot_spots:
+        cx, cy = slot["center"]
+        # Draw slot box centered at point
+        w = int(70 * scale)
+        h = int(45 * scale)
+        cv2.rectangle(frame, (cx - w // 2, cy - h // 2), (cx + w // 2, cy + h // 2), (16, 185, 129), int(2 * scale)) # Green box
         cv2.circle(frame, (cx, cy), int(5 * scale), (16, 185, 129), -1)
-        cv2.putText(frame, f"Slot {slot['name']}", (cx - int(20 * scale), cy - int(10 * scale)), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5 * scale, (255, 255, 255), int(2 * scale) if int(2 * scale) >= 1 else 1)
-        cv2.putText(frame, f"Slot {slot['name']}", (cx - int(20 * scale), cy - int(10 * scale)), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5 * scale, (16, 185, 129), int(1 * scale) if int(1 * scale) >= 1 else 1)
+        cv2.putText(frame, f"Slot {slot['name']}", (cx - int(24 * scale), cy - int(12 * scale)), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5 * scale, (255, 255, 255), int(1.5 * scale) if int(1.5 * scale) >= 1 else 1)
+        
+        # Draw dotted/dashed line connecting slot to its closest road node
+        if slot["closest_road"] and road_nodes:
+            # Find coordinates of closest road node
+            road_idx = 0 if slot["closest_road"] == "entry" else int(slot["closest_road"][1:]) - 1
+            if road_idx < len(road_nodes):
+                rx, ry = road_nodes[road_idx]
+                cv2.line(frame, (cx, cy), (rx, ry), (14, 165, 233), int(1.5 * scale), cv2.LINE_AA) # Light blue connection
 
-    # 3. Draw in-progress slot points
-    if current_points:
-        color = (244, 63, 94) # Rose dot
-        for pt in current_points:
-            cv2.circle(frame, (pt[0], pt[1]), int(6 * scale), color, -1)
-            cv2.circle(frame, (pt[0], pt[1]), int(6 * scale), (255, 255, 255), int(1 * scale) if int(1 * scale) >= 1 else 1)
-        if len(current_points) > 1:
-            pts = np.array(current_points, dtype=np.int32)
-            cv2.polylines(frame, [pts], False, color, int(2 * scale) if int(2 * scale) >= 1 else 1)
+    # 3. Draw instructions in bottom margin (never covers the map image!)
+    y_start = H_orig + int(40 * scale)
+    y_step = int(30 * scale)
+    font_scale = 0.62 * scale
+    thickness = int(2 * scale) if int(2 * scale) >= 1 else 1
 
-    draw_hud(frame)
+    if phase == 0:
+        lines = [
+            "PHASE 1: ROAD CALIBRATION",
+            "Click on the map in sequence to draw the road path (first click is entry).",
+            f"Nodes placed: {len(road_nodes)}  (LClick=Add node | RClick=Undo last)",
+            "Press ENTER when you are done drawing the road path."
+        ]
+    else:
+        lines = [
+            "PHASE 2: PARKING SPOTS CALIBRATION",
+            "Click on map to mark Slot center points. Enter Slot ID in your terminal window.",
+            f"Spots marked: {len(slot_spots)}  (LClick=Add spot | RClick=Undo last)",
+            "Press S to save configurations & Exit | Press ESC to quit without saving"
+        ]
+
+    for i, line in enumerate(lines):
+        color = (59, 130, 246) if i == 0 else (255, 255, 255)
+        cv2.putText(frame, line, (int(30 * scale), y_start + i * y_step), 
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
+
+def redraw():
+    frame = make_base_display()
+    draw_overlays(frame)
     cv2.imshow(window_name, frame)
 
-# Main Execution Flow
+# Main Loop
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-cv2.resizeWindow(window_name, 1280, 720)
+cv2.resizeWindow(window_name, 1280, 720 + int(margin_bottom * (1280 / W_orig)))
 cv2.setMouseCallback(window_name, mouse_callback)
 
-print("=== Phase 1: Calibrating Corridor Nodes ===")
-print("Instructions: Click on the map to define entry point and corridor turn nodes.")
+print("=== Phase 1: Calibrating Road Nodes ===")
+print("Instructions: Click to draw the road path sequence. Press ENTER when finished.")
 
 while True:
     redraw()
@@ -183,103 +189,87 @@ while True:
         cv2.destroyAllWindows()
         break
         
-    elif key == 13: # ENTER (save current slot polygon)
-        if phase == 1:
-            if len(current_points) < 4:
-                print("[Calibrator Warning] Click 4 points to define a slot.")
+    elif key == 13: # ENTER (Confirm road path and switch phase)
+        if phase == 0:
+            if len(road_nodes) < 2:
+                print("[Calibrator Warning] Please place at least 2 road nodes before confirming.")
             else:
-                # Prompt user for slot name in terminal
-                # Bring terminal focus or just input
-                print("\n[Calibrator Action Required] Go to terminal and enter Slot ID/Name:")
-                # Temporarily draw active text on CV window to alert user
-                alert_frame = img.copy()
-                cv2.rectangle(alert_frame, (100, 300), (1100, 420), (0,0,0), -1)
-                cv2.rectangle(alert_frame, (100, 300), (1100, 420), (0,0,255), 2)
-                cv2.putText(alert_frame, "ACTION REQUIRED: Enter Slot ID in your command window", 
-                            (120, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                cv2.imshow(window_name, alert_frame)
-                cv2.waitKey(100)
-                
-                slot_name = input("Enter Slot Name/ID (e.g. 1, 2, 3): ").strip()
-                if not slot_name:
-                    slot_name = str(len(calibrated_slots) + 1)
-                    
-                calibrated_slots.append({
-                    "name": slot_name,
-                    "points": current_points.copy()
-                })
-                print(f"[Calibrator] Saved Slot {slot_name}.")
-                current_points = []
+                phase = 1
+                print("\n=== Phase 2: Calibrating Slot Center Points ===")
+                print("Instructions: Click on map to place slot centers. Type names in console.")
                 
     elif key == ord('s') or key == ord('S'): # Save and Exit
-        if len(calibrated_slots) == 0 and phase == 1:
-            print("[Calibrator Warning] No slots defined yet. Define at least one slot or press ESC to quit.")
-            continue
-            
-        cv2.destroyAllWindows()
-        
-        # 1. Update backend json
-        # Build nodes map
-        final_nodes = {}
-        for k, v in calibrated_corridor.items():
-            final_nodes[k] = v
-            
-        for slot in calibrated_slots:
-            name = slot["name"]
-            pts = np.array(slot["points"], dtype=np.int32)
-            cx = int(np.mean(pts[:, 0]))
-            cy = int(np.mean(pts[:, 1]))
-            final_nodes[name] = [cx, cy]
-            
-        # Build connections graph
-        # Try to preserve edges from loaded config, otherwise map automatically
-        final_graph = graph.copy()
-        
-        # Ensure new slot nodes are in graph connected to center1 as default corridor junction
-        for slot in calibrated_slots:
-            name = slot["name"]
-            if name not in final_graph:
-                final_graph[name] = ["center1"]
-                # Add slot to center1 connections
-                if "center1" in final_graph:
-                    if name not in final_graph["center1"]:
-                        final_graph["center1"].append(name)
-                else:
-                    final_graph["center1"] = [name]
-                    
-        # Remove any deleted slots from connections
-        active_slot_ids = {slot["name"] for slot in calibrated_slots}
-        for k in list(final_graph.keys()):
-            if k not in corridor_nodes and k not in active_slot_ids:
-                del final_graph[k]
-            else:
-                final_graph[k] = [node for node in final_graph[k] if node in corridor_nodes or node in active_slot_ids]
+        if phase == 1:
+            if len(slot_spots) == 0:
+                print("[Calibrator Warning] Mark at least one parking spot before saving.")
+                continue
                 
-        backend_data = {
-            "nodes": final_nodes,
-            "graph": final_graph
-        }
-        
-        # 2. Update frontend json
-        frontend_data = {
-            "slots": calibrated_slots
-        }
-        
-        # Write files
-        backend_json_path.write_text(json.dumps(backend_data, indent=2), encoding="utf-8")
-        frontend_json_path.write_text(json.dumps(frontend_data, indent=2), encoding="utf-8")
-        print("\n[Calibrator] Calibration completed and configs saved successfully!")
-        print(f"  - Backend graph: {backend_json_path}")
-        print(f"  - Frontend slots: {frontend_json_path}")
-        
-        # 3. Rebuild frontend React app
-        import subprocess
-        print("\n[Calibrator] Rebuilding frontend assets for production...")
-        cmd = ["cmd.exe", "/c", "npm run build"]
-        try:
-            subprocess.run(cmd, cwd=str(PROJECT_ROOT / "frontend"), check=True)
-            print("[Calibrator] Rebuild complete! Production dashboard updated.")
-        except Exception as e:
-            print(f"[Calibrator Error] Failed to rebuild frontend: {e}")
+            cv2.destroyAllWindows()
             
-        break
+            # 1. Build backend json nodes & graph connections
+            final_nodes = {}
+            final_graph = {}
+            
+            # Map road nodes
+            for idx, pt in enumerate(road_nodes):
+                name = "entry" if idx == 0 else f"R{idx+1}"
+                final_nodes[name] = pt
+                
+                # Connect sequentially
+                connections = []
+                if idx > 0:
+                    prev_name = "entry" if idx == 1 else f"R{idx}"
+                    connections.append(prev_name)
+                if idx < len(road_nodes) - 1:
+                    next_name = f"R{idx+2}"
+                    connections.append(next_name)
+                final_graph[name] = connections
+                
+            # Map slots center nodes
+            for slot in slot_spots:
+                name = slot["name"]
+                final_nodes[name] = slot["center"]
+                
+                # Connect slot to its closest road node
+                closest_road = slot["closest_road"]
+                final_graph[name] = [closest_road]
+                
+                # Bidirectional connection
+                if closest_road in final_graph:
+                    if name not in final_graph[closest_road]:
+                        final_graph[closest_road].append(name)
+                        
+            backend_data = {
+                "nodes": final_nodes,
+                "graph": final_graph
+            }
+            
+            # 2. Build frontend slot center coordinates json
+            frontend_slots = []
+            for slot in slot_spots:
+                frontend_slots.append({
+                    "name": slot["name"],
+                    "center": slot["center"]
+                })
+            frontend_data = {
+                "slots": frontend_slots
+            }
+            
+            # Write files
+            backend_json_path.write_text(json.dumps(backend_data, indent=2), encoding="utf-8")
+            frontend_json_path.write_text(json.dumps(frontend_data, indent=2), encoding="utf-8")
+            print("\n[Calibrator] Calibration completed and configs saved successfully!")
+            print(f"  - Backend graph: {backend_json_path}")
+            print(f"  - Frontend slots: {frontend_json_path}")
+            
+            # 3. Rebuild frontend React app
+            import subprocess
+            print("\n[Calibrator] Rebuilding frontend assets for production...")
+            cmd = ["cmd.exe", "/c", "npm run build"]
+            try:
+                subprocess.run(cmd, cwd=str(PROJECT_ROOT / "frontend"), check=True)
+                print("[Calibrator] Rebuild complete! Production dashboard updated.")
+            except Exception as e:
+                print(f"[Calibrator Error] Failed to rebuild frontend: {e}")
+                
+            break
