@@ -119,7 +119,7 @@ def redraw():
     # 1. Draw corridor nodes
     for name, pt in calibrated_corridor.items():
         cv2.circle(frame, (pt[0], pt[1]), 8, (37, 99, 235), -1) # Blue dot
-        cv2.circle(frame, (pt[0], pt[1]), 8, (255, 255, 255), 1.5)
+        cv2.circle(frame, (pt[0], pt[1]), 8, (255, 255, 255), 1)
         cv2.putText(frame, name, (pt[0] + 12, pt[1] + 5), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
         cv2.putText(frame, name, (pt[0] + 12, pt[1] + 5), 
