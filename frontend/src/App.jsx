@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid, LineChart, Line } from 'recharts'
+import parkingSlotsData from './assets/parking_slots.json'
 
 const POLL_INTERVAL = 2000
 
@@ -11,6 +12,10 @@ export default function App() {
   const [analytics, setAnalytics] = useState({ status: {}, slot_utilization: [], peak_hours: [], avg_dwell_mins: 0 })
   const [logs, setLogs] = useState({ events: [] })
   const [selectedSlot, setSelectedSlot] = useState(null)
+  
+  // Dijkstra Navigation State
+  const [pathCoords, setPathCoords] = useState([])
+  const [bestSlot, setBestSlot] = useState('')
   
   // Controls
   const [pipelineRunning, setPipelineRunning] = useState(true)
@@ -46,6 +51,19 @@ export default function App() {
     }
   }, [])
 
+  const fetchPath = useCallback(async () => {
+    try {
+      const res = await fetch('/api/path')
+      if (res.ok) {
+        const data = await res.json()
+        setPathCoords(data.coords || [])
+        setBestSlot(data.slot || "")
+      }
+    } catch (e) {
+      console.error("Path Error:", e)
+    }
+  }, [])
+
   // Fetch sections configuration
   const fetchSections = useCallback(async () => {
     try {
@@ -62,11 +80,13 @@ export default function App() {
   useEffect(() => {
     fetchSnapshot()
     fetchSections()
+    fetchPath()
     const timer = setInterval(() => {
       fetchSnapshot()
+      fetchPath()
     }, POLL_INTERVAL)
     return () => clearInterval(timer)
-  }, [fetchSnapshot, fetchSections])
+  }, [fetchSnapshot, fetchSections, fetchPath])
 
   // Fetch Analytics on Tab Switch
   const fetchAnalytics = async () => {
@@ -106,6 +126,100 @@ export default function App() {
       fetchLogs(filterPlate, filterSlot, filterEventType)
     }
   }, [activeTab, fetchLogs, filterPlate, filterSlot, filterEventType])
+
+  const drawPath = useCallback((coords) => {
+    const canvas = document.getElementById("pathCanvas")
+    if (!canvas || coords.length === 0) {
+      const ctx = canvas?.getContext("2d")
+      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height)
+      return
+    }
+
+    const ctx = canvas.getContext("2d")
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+    const originalWidth = 2950
+    const originalHeight = 1440
+
+    const scaleX = canvas.width / originalWidth
+    const scaleY = canvas.height / originalHeight
+
+    // 1. Draw Dijkstra Route
+    ctx.beginPath()
+    ctx.moveTo(coords[0][0] * scaleX, coords[0][1] * scaleY)
+    for (let i = 1; i < coords.length; i++) {
+      ctx.lineTo(coords[i][0] * scaleX, coords[i][1] * scaleY)
+    }
+    ctx.strokeStyle = "#ef4444"
+    ctx.lineWidth = 4
+    ctx.lineCap = "round"
+    ctx.lineJoin = "round"
+    ctx.stroke()
+
+    // 2. Draw slots outlines & occupancy fill
+    const parkingSlots = parkingSlotsData.slots
+    const slotStatus = {}
+    snapshot.slots.forEach(s => {
+      slotStatus[s.slot_id] = s.status === 'free' ? 'free' : 'occupied'
+    })
+
+    parkingSlots.forEach((slot) => {
+      ctx.beginPath()
+      slot.points.forEach(([x, y], index) => {
+        const scaledX = x * scaleX
+        const scaledY = y * scaleY
+        if (index === 0) {
+          ctx.moveTo(scaledX, scaledY)
+        } else {
+          ctx.lineTo(scaledX, scaledY)
+        }
+      })
+      ctx.closePath()
+      ctx.fillStyle =
+        slotStatus[slot.name] === "occupied"
+          ? "rgba(239, 68, 68, 0.45)"
+          : "rgba(34, 197, 94, 0.35)"
+      ctx.fill()
+
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.8)"
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+
+      // Centered Text Label
+      let centerX = 0
+      let centerY = 0
+      slot.points.forEach(([x, y]) => {
+        centerX += x
+        centerY += y
+      })
+      centerX = (centerX / slot.points.length) * scaleX
+      centerY = (centerY / slot.points.length) * scaleY
+
+      ctx.fillStyle = "white"
+      ctx.font = "bold 9px Inter, sans-serif"
+      ctx.textAlign = "center"
+      ctx.textBaseline = "middle"
+      ctx.fillText(`Slot ${slot.name}`, centerX, centerY)
+    })
+
+    // 3. Draw node dots along path joints
+    coords.forEach(([x, y]) => {
+      ctx.beginPath()
+      ctx.arc(x * scaleX, y * scaleY, 5, 0, 2 * Math.PI)
+      ctx.fillStyle = "#1e293b"
+      ctx.fill()
+      ctx.strokeStyle = "#ffffff"
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    })
+  }, [snapshot.slots])
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      drawPath(pathCoords)
+    }, 100)
+    return () => clearTimeout(timer)
+  }, [pathCoords, snapshot.slots, drawPath])
 
   const switchSection = async (sectionId) => {
     try {
@@ -497,6 +611,33 @@ export default function App() {
                     </div>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* Smart Navigation Panel */}
+            <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <h3 style={{ fontSize: 13, fontWeight: 600, color: '#60a5fa' }}>Smart Navigation</h3>
+              <p style={{ fontSize: 12, color: '#94a3b8', margin: '4px 0 8px 0' }}>
+                Best Route: {bestSlot === "FULL" ? <strong style={{ color: '#ef4444' }}>Parking Lot Full 🚫</strong> : <span>Go to <strong style={{ color: '#10b981' }}>Slot {bestSlot}</strong></span>}
+              </p>
+              <div className="parking-map-wrapper">
+                <img
+                  src="./aitd_parking_lot_main.png"
+                  className="parking-map"
+                  crossOrigin="anonymous"
+                  style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 8 }}
+                />
+                <canvas
+                  id="pathCanvas"
+                  width="900"
+                  height="440"
+                  className="path-canvas"
+                ></canvas>
+                {bestSlot === "FULL" && (
+                  <div className="full-overlay" style={{ borderRadius: 8 }}>
+                    Parking Lot Full 🚫
+                  </div>
+                )}
               </div>
             </div>
           </div>

@@ -26,9 +26,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import settings
 from backend.database.models import init_db, get_db, ParkingEvent, SlotState
 from backend.detector import ParkingDetector, ParkingState
+from backend.utils.pathfinder import ParkingPathfinder
+
 # Shared state
 parking_state = ParkingState()
 detector: Optional[ParkingDetector] = None
+
+# Initialize pathfinder with portable path
+pathfinder = ParkingPathfinder(settings.make_absolute("backend/marked_slots/parking_slots.json"))
+
 
 
 @asynccontextmanager
@@ -102,6 +108,19 @@ if FRONTEND_DIST.exists():
 async def get_snapshot():
     """Return latest snapshotted slot configurations, cache logs, and general occupancy stats."""
     return parking_state.get_snapshot()
+
+
+@app.get("/api/path")
+@app.get("/api/navigation/path")
+async def get_navigation_path():
+    """Calculates shortest route from entry to the closest free parking slot using Dijkstra."""
+    snapshot = parking_state.get_snapshot()
+    slots_list = snapshot.get("slots", [])
+    free_slots = [str(s["slot_id"]) for s in slots_list if s["status"] == "free"]
+    
+    path_info = pathfinder.find_shortest_path_to_available_slot(free_slots)
+    return path_info
+
 
 
 @app.get("/api/control/sections")
