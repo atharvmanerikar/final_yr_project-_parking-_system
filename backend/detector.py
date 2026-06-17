@@ -181,9 +181,19 @@ class ParkingDetector:
             self._running = False
             return
 
-        # Attempt high resolution capture settings
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+        # Get video properties for real-time throttling
+        import numpy as np
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        if video_fps <= 0 or np.isnan(video_fps):
+            video_fps = 30.0
+            
+        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        is_video_file = total_frames > 0
+
+        # Attempt high resolution capture settings for live webcams only
+        if not is_video_file:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         source_label = "Webcam" if self.source == 0 else os.path.basename(str(self.source))
@@ -192,15 +202,7 @@ class ParkingDetector:
         fps_timer = time.time()
         fps_frames = 0
         fps = 0.0
-
-        # Get video properties for real-time skipping
-        import numpy as np
-        video_fps = cap.get(cv2.CAP_PROP_FPS)
-        if video_fps <= 0 or np.isnan(video_fps):
-            video_fps = 30.0
-            
-        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        is_video_file = total_frames > 0
+        
         video_start_time = time.time()
         frame_counter = 0
 
@@ -208,17 +210,17 @@ class ParkingDetector:
 
         while self._running:
             if is_video_file:
-                elapsed_wall = time.time() - video_start_time
-                target_frame = int(elapsed_wall * video_fps)
+                # Throttle to match video frame rate if processing is faster than real-time
                 current_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
-                skip_count = target_frame - current_frame
-                
-                if skip_count > 0:
-                    if skip_count > 100: # large jump, seek directly
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-                    else: # small jump, fast grab
-                        for _ in range(int(skip_count - 1)):
-                            cap.grab()
+                target_wall_time = current_frame / video_fps
+                elapsed_wall = time.time() - video_start_time
+                time_to_wait = target_wall_time - elapsed_wall
+                if time_to_wait > 0:
+                    if time_to_wait > 1.0:
+                        # Resync start time if there is a massive gap (e.g. paused or debugging)
+                        video_start_time = time.time() - (current_frame / video_fps)
+                    else:
+                        time.sleep(time_to_wait)
 
             ret, frame = cap.read()
             if not ret:
@@ -227,8 +229,9 @@ class ParkingDetector:
                     print(f"[Detector] Video ended. Re-opening source: {self.source}")
                     cap.release()
                     cap = cv2.VideoCapture(self.source)
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                    if not is_video_file:
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     video_start_time = time.time() # Reset clock!
                     frame_counter = 0
