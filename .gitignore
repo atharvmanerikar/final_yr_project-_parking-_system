@@ -29,3 +29,6 @@ videos/
 
 
 *.log
+
+# Reference materials
+backend/extracted_report.txt
