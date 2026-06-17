@@ -87,10 +87,15 @@ def mouse_callback(event, x, y, flags, param):
                 print(f"[Calibrator] Removed slot vertex: {removed}")
 
 def draw_hud(frame):
-    # Header Info box
-    y_offset = 30
-    cv2.rectangle(frame, (10, 10), (500, 110), (0, 0, 0), -1)
-    cv2.rectangle(frame, (10, 10), (500, 110), (255, 255, 255), 1)
+    # Determine scale factor based on image width
+    scale = W_orig / 1000.0
+    
+    box_w = int(520 * scale)
+    box_h = int(120 * scale)
+    
+    # Draw box background
+    cv2.rectangle(frame, (int(15 * scale), int(15 * scale)), (int(15 * scale) + box_w, int(15 * scale) + box_h), (0, 0, 0), -1)
+    cv2.rectangle(frame, (int(15 * scale), int(15 * scale)), (int(15 * scale) + box_w, int(15 * scale) + box_h), (255, 255, 255), int(2 * scale))
 
     if phase == 0:
         curr_node = corridor_nodes[corridor_idx]
@@ -108,46 +113,55 @@ def draw_hud(frame):
             "ENTER=Save slot  S=Save config & Exit  ESC=Quit"
         ]
         
+    font_scale = 0.52 * scale
+    thickness = int(1.5 * scale)
+    if thickness < 1:
+        thickness = 1
+        
+    y_start = int(40 * scale)
+    y_step = int(24 * scale)
+    
     for i, line in enumerate(lines):
         color = (96, 165, 250) if i == 0 else (255, 255, 255)
-        cv2.putText(frame, line, (20, y_offset + i * 22), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 1)
+        cv2.putText(frame, line, (int(25 * scale), y_start + i * y_step), 
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
 
 def redraw():
     frame = img.copy()
+    scale = W_orig / 1000.0
     
     # 1. Draw corridor nodes
     for name, pt in calibrated_corridor.items():
-        cv2.circle(frame, (pt[0], pt[1]), 8, (37, 99, 235), -1) # Blue dot
-        cv2.circle(frame, (pt[0], pt[1]), 8, (255, 255, 255), 1)
-        cv2.putText(frame, name, (pt[0] + 12, pt[1] + 5), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
-        cv2.putText(frame, name, (pt[0] + 12, pt[1] + 5), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (37, 99, 235), 1)
+        cv2.circle(frame, (pt[0], pt[1]), int(8 * scale), (37, 99, 235), -1) # Blue dot
+        cv2.circle(frame, (pt[0], pt[1]), int(8 * scale), (255, 255, 255), int(1.5 * scale) if int(1.5 * scale) >= 1 else 1)
+        cv2.putText(frame, name, (pt[0] + int(12 * scale), pt[1] + int(5 * scale)), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55 * scale, (255, 255, 255), int(2 * scale) if int(2 * scale) >= 1 else 1)
+        cv2.putText(frame, name, (pt[0] + int(12 * scale), pt[1] + int(5 * scale)), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55 * scale, (37, 99, 235), int(1 * scale) if int(1 * scale) >= 1 else 1)
                     
     # 2. Draw calibrated slots
     for i, slot in enumerate(calibrated_slots):
         pts = np.array(slot["points"], dtype=np.int32)
-        cv2.polylines(frame, [pts], True, (34, 197, 94), 2) # Green outline
+        cv2.polylines(frame, [pts], True, (34, 197, 94), int(2 * scale) if int(2 * scale) >= 1 else 1) # Green outline
         
         # Draw slot label inside centroid
         cx = int(np.mean(pts[:, 0]))
         cy = int(np.mean(pts[:, 1]))
-        cv2.circle(frame, (cx, cy), 5, (16, 185, 129), -1)
-        cv2.putText(frame, f"Slot {slot['name']}", (cx - 20, cy - 10), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-        cv2.putText(frame, f"Slot {slot['name']}", (cx - 20, cy - 10), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (16, 185, 129), 1)
+        cv2.circle(frame, (cx, cy), int(5 * scale), (16, 185, 129), -1)
+        cv2.putText(frame, f"Slot {slot['name']}", (cx - int(20 * scale), cy - int(10 * scale)), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5 * scale, (255, 255, 255), int(2 * scale) if int(2 * scale) >= 1 else 1)
+        cv2.putText(frame, f"Slot {slot['name']}", (cx - int(20 * scale), cy - int(10 * scale)), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5 * scale, (16, 185, 129), int(1 * scale) if int(1 * scale) >= 1 else 1)
 
     # 3. Draw in-progress slot points
     if current_points:
         color = (244, 63, 94) # Rose dot
         for pt in current_points:
-            cv2.circle(frame, (pt[0], pt[1]), 6, color, -1)
-            cv2.circle(frame, (pt[0], pt[1]), 6, (255, 255, 255), 1)
+            cv2.circle(frame, (pt[0], pt[1]), int(6 * scale), color, -1)
+            cv2.circle(frame, (pt[0], pt[1]), int(6 * scale), (255, 255, 255), int(1 * scale) if int(1 * scale) >= 1 else 1)
         if len(current_points) > 1:
             pts = np.array(current_points, dtype=np.int32)
-            cv2.polylines(frame, [pts], False, color, 2)
+            cv2.polylines(frame, [pts], False, color, int(2 * scale) if int(2 * scale) >= 1 else 1)
 
     draw_hud(frame)
     cv2.imshow(window_name, frame)
