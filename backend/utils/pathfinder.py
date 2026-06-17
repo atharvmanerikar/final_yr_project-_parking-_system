@@ -15,19 +15,27 @@ from typing import Dict, List, Tuple, Optional
 
 class ParkingPathfinder:
     def __init__(self, graph_config_path: str):
+        self.graph_config_path = graph_config_path
         self.nodes: Dict[str, List[int]] = {}
         self.graph: Dict[str, List[str]] = {}
-        self._load(graph_config_path)
+        self._last_mtime = 0.0
+        self._load()
 
-    def _load(self, path: str):
-        if not os.path.exists(path):
+    def _load(self):
+        path = self.graph_config_path
+        if not path or not os.path.exists(path):
             print(f"[Pathfinder Warning] Graph config not found at: {path}")
             return
             
         try:
+            mtime = os.path.getmtime(path)
+            if mtime == self._last_mtime:
+                return
+                
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             self.nodes = data.get("nodes", {})
             self.graph = data.get("graph", {})
+            self._last_mtime = mtime
             print(f"[Pathfinder] Loaded graph with {len(self.nodes)} nodes from {path}")
         except Exception as e:
             print(f"[Pathfinder Error] Error loading graph config: {e}")
@@ -38,6 +46,7 @@ class ParkingPathfinder:
 
     def dijkstra(self, start: str, end: str) -> Tuple[List[str], float]:
         """Calculates shortest path using Dijkstra's algorithm."""
+        self._load()
         if start not in self.nodes or end not in self.nodes:
             return [], float("inf")
 
@@ -66,6 +75,7 @@ class ParkingPathfinder:
 
     def find_shortest_path_to_available_slot(self, available_slots: List[str]) -> Dict[str, any]:
         """Finds the shortest path from 'entry' to any available slot."""
+        self._load()
         if not available_slots:
             return {"slot": "FULL", "coords": []}
             
