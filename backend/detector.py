@@ -142,6 +142,8 @@ class ParkingDetector:
         
         # Violations metadata
         self._outside_parked_frames: dict[int, int] = defaultdict(int)
+        self._improper_parked_frames: dict[int, int] = defaultdict(int)
+        self._proper_parked_frames: dict[int, int] = defaultdict(int)
         self._active_violations: dict[int, dict] = {}
         self._track_slot_overlaps: dict[int, float] = {}
         self._track_missing_count: dict[int, int] = defaultdict(int)
@@ -326,7 +328,7 @@ class ParkingDetector:
                             dy = pos_hist[idx][1] - pos_hist[idx-1][1]
                             total_movement += np.sqrt(dx**2 + dy**2)
                         avg_movement = total_movement / (len(pos_hist) - 1)
-                        if avg_movement < 4.0:  # Threshold of 4.0 pixels in 640px processed space
+                        if avg_movement < 12.0:  # Increased threshold to 12.0 pixels to prevent camera jitter glitches
                             is_stopped = True
                     else:
                         avg_movement = 999.0  # Assumed moving until history is loaded
@@ -397,18 +399,48 @@ class ParkingDetector:
                         self._outside_parked_frames[track_id] = 0
                         
                         overlap_ratio = self._track_slot_overlaps.get(track_id, 1.0)
-                        if overlap_ratio < 0.80:
-                            new_status = "improperly_parked"
-                            self._active_violations[track_id] = {
-                                "type": "improper_parking",
-                                "track_id": track_id,
-                                "slot_id": slot_id,
-                                "overlap_ratio": round(overlap_ratio * 100, 1),
-                                "description": f"Vehicle ID {track_id} is spilling out of Slot {slot_id} ({round(overlap_ratio*100)}% inside)."
-                            }
+                        is_previously_parked = old_status in ("parked", "improperly_parked")
+                        
+                        if not is_previously_parked:
+                            # Fresh parking event: set state instantly based on overlap to avoid latency
+                            self._improper_parked_frames[track_id] = 0
+                            self._proper_parked_frames[track_id] = 0
+                            if overlap_ratio < 0.90:  # Increased threshold to 90%
+                                new_status = "improperly_parked"
+                                self._active_violations[track_id] = {
+                                    "type": "improper_parking",
+                                    "track_id": track_id,
+                                    "slot_id": slot_id,
+                                    "overlap_ratio": round(overlap_ratio * 100, 1),
+                                    "description": f"Vehicle ID {track_id} is spilling out of Slot {slot_id} ({round(overlap_ratio*100)}% inside)."
+                                }
+                            else:
+                                new_status = "parked"
+                                self._active_violations.pop(track_id, None)
                         else:
-                            new_status = "parked"
-                            self._active_violations.pop(track_id, None)
+                            # Hysteresis for established parked state to prevent glitching/flicker
+                            if overlap_ratio < 0.90:  # Increased threshold to 90%
+                                self._improper_parked_frames[track_id] += 1
+                                self._proper_parked_frames[track_id] = 0
+                                if self._improper_parked_frames[track_id] >= 15:
+                                    new_status = "improperly_parked"
+                                    self._active_violations[track_id] = {
+                                        "type": "improper_parking",
+                                        "track_id": track_id,
+                                        "slot_id": slot_id,
+                                        "overlap_ratio": round(overlap_ratio * 100, 1),
+                                        "description": f"Vehicle ID {track_id} is spilling out of Slot {slot_id} ({round(overlap_ratio*100)}% inside)."
+                                    }
+                                else:
+                                    new_status = old_status
+                            else:
+                                self._proper_parked_frames[track_id] += 1
+                                self._improper_parked_frames[track_id] = 0
+                                if self._proper_parked_frames[track_id] >= 15:
+                                    new_status = "parked"
+                                    self._active_violations.pop(track_id, None)
+                                else:
+                                    new_status = old_status
 
                         old_assigned_slot = self._track_slot_assignments.get(track_id)
                         
@@ -483,6 +515,8 @@ class ParkingDetector:
                     self._track_statuses.pop(tid, None)
                     self._ocr_in_progress.pop(tid, None)
                     self._outside_parked_frames.pop(tid, None)
+                    self._improper_parked_frames.pop(tid, None)
+                    self._proper_parked_frames.pop(tid, None)
                     self._active_violations.pop(tid, None)
                     self._track_slot_overlaps.pop(tid, None)
                     self._track_missing_count.pop(tid, None)
