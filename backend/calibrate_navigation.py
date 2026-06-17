@@ -53,23 +53,8 @@ def mouse_callback(event, x, y, flags, param):
             print(f"[Calibrator] Road node placed: {node_name} at [{x}, {y}]")
         elif phase == 1:
             # Place slot center
-            print("\n[Calibrator Action Required] Go to terminal and enter Slot ID/Name:")
+            slot_name = str(len(slot_spots) + 1)
             
-            # Temporary UI feedback
-            alert_frame = make_base_display()
-            draw_overlays(alert_frame)
-            # Alert banner on top of image
-            cv2.rectangle(alert_frame, (100, H_orig // 2 - 60), (display_w - 100, H_orig // 2 + 40), (15, 23, 42), -1)
-            cv2.rectangle(alert_frame, (100, H_orig // 2 - 60), (display_w - 100, H_orig // 2 + 40), (59, 130, 246), 3)
-            cv2.putText(alert_frame, "ACTION REQUIRED: Enter Slot ID/Name in your terminal", 
-                        (200, H_orig // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-            cv2.imshow(window_name, alert_frame)
-            cv2.waitKey(100)
-            
-            slot_name = input("Enter Slot Name/ID (e.g. 1, 2, 3): ").strip()
-            if not slot_name:
-                slot_name = str(len(slot_spots) + 1)
-                
             # Find closest road node
             closest_node_name = None
             min_dist = float("inf")
@@ -85,7 +70,7 @@ def mouse_callback(event, x, y, flags, param):
                 "center": [x, y],
                 "closest_road": closest_node_name
             })
-            print(f"[Calibrator] Saved Slot {slot_name} (routed to {closest_node_name}).")
+            print(f"[Calibrator] Placed Slot {slot_name} at [{x}, {y}] (routed to {closest_node_name}).")
 
     elif event == cv2.EVENT_RBUTTONDOWN:
         if phase == 0:
