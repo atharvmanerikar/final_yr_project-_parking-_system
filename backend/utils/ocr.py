@@ -251,7 +251,9 @@ def read_plate_two_stage(vehicle_crop: np.ndarray, expected_slot: str = None) ->
     alpr_model = get_alpr_model()
     if alpr_model is not None:
         try:
-            results = alpr_model(vehicle_crop, verbose=False)[0]
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            results = alpr_model(vehicle_crop, verbose=False, device=device)[0]
             best_plate_crop = None
             best_yolo_conf = 0.0
 

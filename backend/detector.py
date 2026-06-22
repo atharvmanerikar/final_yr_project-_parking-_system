@@ -115,9 +115,11 @@ class ParkingDetector:
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
-        print(f"[Detector] Loading YOLO detection model: {yolo_model}")
+        import torch
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"[Detector] Loading YOLO detection model: {yolo_model} on device: {self.device}")
         self.model = YOLO(yolo_model)
-        print("[Detector] YOLO loaded successfully.")
+        print(f"[Detector] YOLO loaded successfully.")
 
         self.tracker = sv.ByteTrack(
             track_activation_threshold=0.25,
@@ -321,7 +323,8 @@ class ParkingDetector:
                 proc,
                 classes=[1, 2, 3, 5, 7],
                 conf=self.confidence,
-                verbose=False
+                verbose=False,
+                device=self.device
             )[0]
             
             detections = sv.Detections.from_ultralytics(results)
