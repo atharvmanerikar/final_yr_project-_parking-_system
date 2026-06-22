@@ -139,6 +139,9 @@ class ParkingDetector:
         self._track_statuses: dict[int, str] = {}
         self._plate_histories = defaultdict(list)
         self._alpr_attempts: dict[int, int] = defaultdict(int)
+        self._alpr_done: dict[int, bool] = defaultdict(bool)
+        self._parked_frames: dict[int, int] = defaultdict(int)
+        self._pending_alpr_crops: dict[int, list] = defaultdict(list)
         
         # Violations metadata
         self._outside_parked_frames: dict[int, int] = defaultdict(int)
@@ -210,14 +213,28 @@ class ParkingDetector:
 
         while self._running:
             if is_video_file:
-                # Throttle to match video frame rate if processing is faster than real-time
+                # Throttle to match video frame rate, skipping frames if lagging slightly,
+                # or resynchronizing start time if lagging significantly.
                 current_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
+                target_frame = int((time.time() - video_start_time) * video_fps)
+                skip_count = target_frame - current_frame
+                
+                if skip_count > 30:
+                    # Lag is too large (e.g. pause or loading delay). Resync start time.
+                    video_start_time = time.time() - (current_frame / video_fps)
+                elif skip_count > 0:
+                    # Small lag (e.g. temporary processing slowdown). Skip up to 3 frames.
+                    actual_skip = min(skip_count, 3)
+                    for _ in range(actual_skip):
+                        cap.grab()
+                    current_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
+
                 target_wall_time = current_frame / video_fps
                 elapsed_wall = time.time() - video_start_time
                 time_to_wait = target_wall_time - elapsed_wall
                 if time_to_wait > 0:
                     if time_to_wait > 1.0:
-                        # Resync start time if there is a massive gap (e.g. paused or debugging)
+                        # Resync start time if there is a massive gap
                         video_start_time = time.time() - (current_frame / video_fps)
                     else:
                         time.sleep(time_to_wait)
@@ -401,6 +418,9 @@ class ParkingDetector:
                         old_assigned_slot = self._track_slot_assignments.pop(track_id, None)
                         if old_assigned_slot:
                             self._handle_vehicle_exit(track_id, old_assigned_slot)
+                        else:
+                            self._parked_frames[track_id] = 0
+                            self._pending_alpr_crops[track_id] = []
                             
                         if slot_id is None:
                             # Outside all slots
@@ -504,21 +524,25 @@ class ParkingDetector:
                         update_slot_state(slot_id, db_status, track_id, self._track_plates.get(track_id), self._entry_times[track_id])
 
                         # 4. Trigger Two-Stage ALPR (with temporal voting) asynchronously
-                        # Only trigger plate detection once the vehicle has been parked in the slot for at least 1.2 seconds
-                        time_in_slot = (datetime.utcnow() - self._entry_times[track_id]).total_seconds() if track_id in self._entry_times else 0
-                        if time_in_slot >= 1.2:
-                            if not self._ocr_in_progress[track_id] and self._alpr_attempts[track_id] < 10:
-                                # Start OCR in background thread
-                                self._ocr_in_progress[track_id] = True
-                                self._alpr_attempts[track_id] += 1
-                                
-                                # Crop from high-resolution frame
+                        # Only trigger plate detection once the vehicle is stabilized/parked in the slot
+                        if not self._alpr_done[track_id] and not self._ocr_in_progress[track_id]:
+                            self._parked_frames[track_id] += 1
+                            # Once stabilized (e.g. 10 frames of being parked in slot)
+                            if self._parked_frames[track_id] >= 10:
                                 crop = crop_from_bbox(frame, xyxy)
-                                threading.Thread(
-                                    target=self._async_ocr_worker,
-                                    args=(crop, track_id, slot_id),
-                                    daemon=True
-                                ).start()
+                                self._pending_alpr_crops[track_id].append(crop)
+                                
+                                if len(self._pending_alpr_crops[track_id]) == 3:
+                                    self._ocr_in_progress[track_id] = True
+                                    self._alpr_done[track_id] = True
+                                    crops_to_process = list(self._pending_alpr_crops[track_id])
+                                    self._pending_alpr_crops[track_id] = []
+                                    
+                                    threading.Thread(
+                                        target=self._async_ocr_worker,
+                                        args=(crops_to_process, track_id, slot_id),
+                                        daemon=True
+                                    ).start()
 
                     # Save and log status transitions
                     if new_status != old_status:
@@ -551,6 +575,9 @@ class ParkingDetector:
                     self._active_violations.pop(tid, None)
                     self._track_slot_overlaps.pop(tid, None)
                     self._track_missing_count.pop(tid, None)
+                    self._alpr_done.pop(tid, None)
+                    self._parked_frames.pop(tid, None)
+                    self._pending_alpr_crops.pop(tid, None)
                 else:
                     self._track_missing_count[tid] = 0
 
@@ -608,41 +635,58 @@ class ParkingDetector:
         self.state.push_event(exit_event)
         self.state.update_avg_dwell(dwell_secs)
         
+        # Clean up ALPR/OCR states for this track
+        self._parked_frames[track_id] = 0
+        self._pending_alpr_crops[track_id] = []
+        self._alpr_done[track_id] = False
+        
         dwell_str = f"{dwell_secs // 60}m {dwell_secs % 60}s" if dwell_secs else "N/A"
         print(f"[Detector] Exit: Track {track_id} left Slot {slot_id} (Dwell: {dwell_str})")
 
-    def _async_ocr_worker(self, crop: np.ndarray, track_id: int, slot_id: str):
+    def _async_ocr_worker(self, crops: list, track_id: int, slot_id: str):
         """Worker method to execute EasyOCR in background thread and update states."""
         try:
-            plate_text, score = read_plate_two_stage(crop, slot_id)
-            if plate_text:
-                self._plate_histories[track_id].append(plate_text)
-                best_plate = Counter(self._plate_histories[track_id]).most_common(1)[0][0]
+            results = []
+            for crop in crops:
+                plate_text, score = read_plate_two_stage(crop, slot_id)
+                if plate_text:
+                    results.append((plate_text, score))
+            
+            if results:
+                # Find the most common plate text from the batch
+                plate_texts = [r[0] for r in results]
+                best_plate = Counter(plate_texts).most_common(1)[0][0]
+                
+                # Retrieve the max confidence score for that plate
+                best_score = max(r[1] for r in results if r[0] == best_plate)
+                
+                self._plate_histories[track_id].append(best_plate)
+                final_plate = Counter(self._plate_histories[track_id]).most_common(1)[0][0]
                 
                 # Retrieve entry time safely
                 entry_time = self._entry_times.get(track_id)
                 db_status = "improperly_parked" if self._track_statuses.get(track_id) == "improperly_parked" else "occupied"
                 
                 old_plate = self._track_plates.get(track_id)
-                if best_plate != old_plate:
-                    self._track_plates[track_id] = best_plate
-                    self.slots.update_plate(slot_id, best_plate)
+                if final_plate != old_plate:
+                    self._track_plates[track_id] = final_plate
+                    self.slots.update_plate(slot_id, final_plate)
                     
                     # Log Event and update state in DB
-                    log_event(track_id, slot_id, best_plate, score, "ocr_update")
-                    update_slot_state(slot_id, db_status, track_id, best_plate, entry_time)
+                    log_event(track_id, slot_id, final_plate, best_score, "ocr_update")
+                    update_slot_state(slot_id, db_status, track_id, final_plate, entry_time)
                     
                     # Update current cache list
                     self.state.push_event({
                         "track_id": track_id,
                         "slot_id": slot_id,
-                        "plate": best_plate,
-                        "ocr_conf": score,
+                        "plate": final_plate,
+                        "ocr_conf": best_score,
                         "event_type": "ocr_update",
                         "timestamp": datetime.utcnow().isoformat(),
                         "dwell_secs": None
                     })
-                    print(f"[Detector Async OCR] Plate read (Voting): Track {track_id} -> '{best_plate}' ({score:.2f})")
+                    print(f"[Detector Async OCR] Plate read (Voting): Track {track_id} -> '{final_plate}' ({best_score:.2f})")
         except Exception as e:
             print(f"[Detector Async OCR Error] {e}")
         finally:
