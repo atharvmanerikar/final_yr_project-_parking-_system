@@ -6,7 +6,7 @@ echo ===================================================
 
 :: Start FastAPI Backend using Python venv
 echo [1/2] Starting FastAPI Backend on Port 8000...
-start "Smart Parking - Backend" cmd /k "E:\smart_parking_v2\venv\Scripts\python.exe -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload"
+start "Smart Parking - Backend" cmd /k "venv\Scripts\python.exe -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload"
 
 :: Start React Frontend Dev Server
 echo [2/2] Starting Vite Frontend on Port 5173...

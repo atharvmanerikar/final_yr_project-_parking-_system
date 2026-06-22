@@ -382,7 +382,8 @@ async def start_calibration():
     detector.stop()
         
     # Open the desktop calibration OpenCV window using the python script
-    python_exe = r"E:\smart_parking_v2\venv\Scripts\python.exe"
+    import sys
+    python_exe = sys.executable
     script_path = str(settings.PROJECT_ROOT / "backend/calibrate_slots.py")
     
     cmd = [python_exe, script_path, "--image", temp_img_path, "--output", slots_file]
@@ -405,7 +406,8 @@ async def start_navigation_calibration():
         detector.stop()
         
     # Open the map calibration window
-    python_exe = r"E:\smart_parking_v2\venv\Scripts\python.exe"
+    import sys
+    python_exe = sys.executable
     script_path = str(settings.PROJECT_ROOT / "backend/calibrate_navigation.py")
     
     cmd = [python_exe, script_path]
