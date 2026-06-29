@@ -10,7 +10,7 @@ echo [1/6] Checking Python installation...
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Python is not installed or not added to your PATH environment variable.
-    echo Please install Python (3.10 to 3.14) and check the "Add Python to PATH" box.
+    echo Please install Python 3.10 to 3.14 and check the "Add Python to PATH" box.
     goto :error
 )
 echo Python detected.
@@ -21,7 +21,7 @@ echo [2/6] Checking Node.js and NPM...
 node --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Node.js is not installed or not added to your PATH.
-    echo Please install Node.js (v18+) to set up the React frontend.
+    echo Please install Node.js v18 or higher to set up the React frontend.
     goto :error
 )
 echo Node.js and NPM detected.
@@ -37,7 +37,7 @@ if not exist venv (
     )
     echo Virtual environment created successfully.
 ) else (
-    echo Virtual environment already exists (skipping creation).
+    echo Virtual environment already exists, skipping creation.
 )
 
 :: 4. Install Backend Dependencies
@@ -57,23 +57,25 @@ if %errorlevel% neq 0 (
 :: 5. Install PyTorch with GPU or CPU support
 echo.
 echo [5/6] Detecting NVIDIA GPU and configuring PyTorch...
-nvidia-smi >nul 2>&1
-if %errorlevel% eq 0 (
-    echo NVIDIA GPU detected! Installing PyTorch with CUDA 12.6 acceleration...
-    venv\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126 --force-reinstall
-    if %errorlevel% neq 0 (
-        echo [WARNING] CUDA-enabled PyTorch installation failed. Falling back to default CPU version...
-        venv\Scripts\python.exe -m pip install torch torchvision
-    )
-) else (
-    echo No NVIDIA GPU detected. Installing standard CPU version of PyTorch...
-    venv\Scripts\python.exe -m pip install torch torchvision
-)
+goto :install_cpu
+
+echo NVIDIA GPU detected! Attempting to install PyTorch with CUDA 12.6 acceleration...
+venv\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126 --force-reinstall
+if %errorlevel% equ 0 goto :env_setup
+
+echo [WARNING] CUDA-enabled PyTorch installation failed (possibly due to disk space).
+echo Falling back to default CPU version...
+
+:install_cpu
+echo Installing standard CPU version of PyTorch...
+venv\Scripts\python.exe -m pip install torch torchvision
+
+:env_setup
 
 :: 6. Setup Environment Config File
 if not exist .env (
     echo.
-    echo Setting up default configuration (.env)...
+    echo Setting up default configuration env file...
     copy .env.example .env >nul
     echo Created .env config file.
 )

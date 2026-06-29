@@ -356,8 +356,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div className={`pulse-dot ${connError ? 'red' : 'green'}`} />
           <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700 }}>Smart Parking Control Hub</h1>
-            <p className="text-muted" style={{ fontSize: 11, marginTop: 2 }}>NextGen AI Computer Vision & Navigation</p>
+            <h1 style={{ fontSize: 22, fontWeight: 700 }}>Smart Parking</h1>
           </div>
         </div>
         
@@ -474,10 +473,7 @@ export default function App() {
 
           {/* Right: AI Smart Suggestion Assistant Card */}
           <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            <div style={{ borderBottom: '1px solid var(--border)', paddingBottom: 12 }}>
-              <h2 style={{ fontSize: 20, fontWeight: 700, color: '#60a5fa' }}>AI Smart Parking Assistant</h2>
-              <p className="text-muted" style={{ fontSize: 12, marginTop: 4 }}>Real-time section suggestions and active routing alerts.</p>
-            </div>
+            {/* Recommendation headers removed */}
 
             {/* Recommendation Display */}
             {(() => {
